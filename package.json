@@ -1,0 +1,14 @@
+{
+  "name": "chronocanvas-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @chronocanvas/web dev",
+    "build:web": "pnpm --filter @chronocanvas/web build",
+    "preview:web": "pnpm --filter @chronocanvas/web preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
