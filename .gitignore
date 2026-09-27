@@ -2,11 +2,13 @@
 node_modules/
 .pnp
 .pnp.js
+.pnpm-store/
 
 # Build outputs
 dist/
 build/
 out/
+.turbo/
 
 # Environment variables
 .env
@@ -37,7 +39,6 @@ coverage/
 .npm
 .eslintcache
 .parcel-cache
-.turbo
 
 # OS files
 .DS_Store
