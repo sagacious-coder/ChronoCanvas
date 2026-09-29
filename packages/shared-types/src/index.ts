@@ -21,7 +21,18 @@ export interface PeerAwareness {
 export interface SyncMessage {
   type: 'crdt-sync';
   docId: string;
-  versionFrom?: string; // Hex representation of Loro Frontier
+  /**
+   * Hex-encoded Loro **Version Vector** — the output of
+   * `VersionVector.encode()`, i.e. the per-peer op counters the sender already
+   * holds. This is NOT a Frontier (a Frontier is a set of op IDs at the tips of
+   * the DAG and cannot be compared without the OpLog).
+   *
+   * The receiver diffs against it with `doc.export({ mode: 'update', from })`
+   * to compute exactly the ops the sender is missing. Senders set it to their
+   * version *after* applying their own edit, so a diff can never echo their own
+   * ops back. Omit it on a cold join to request a full snapshot.
+   */
+  versionFrom?: string;
   payload: string;     // Base64 encoded binary delta
   senderId: string;
   timestamp: number;
@@ -29,6 +40,12 @@ export interface SyncMessage {
 
 export interface AwarenessMessage {
   type: 'awareness-update';
+  /**
+   * Scopes presence to a single document. One socket may be joined to several
+   * documents at once, so cursors must name the document they belong to rather
+   * than being fanned out across every room the socket happens to share.
+   */
+  docId: string;
   peer: PeerAwareness;
   timestamp: number;
 }
