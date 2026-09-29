@@ -18,23 +18,44 @@ export interface PeerAwareness {
   isAgent?: boolean;
 }
 
+/**
+ * A Loro **Version Vector**, hex-encoded for the JSON wire.
+ *
+ * This is the hex of `VersionVector.encode()` — the per-peer op counters a peer
+ * holds — decoded back with `VersionVector.decode()` on receipt. It is modelled
+ * as a distinct named type (rather than a bare `string`) so a `versionFrom`
+ * field reads as "a version vector", not "some string": a Frontier hash, a
+ * base64 payload, and a version vector are all strings on the wire but must
+ * never be mixed. It stays assignable to/from `string` because a live wasm
+ * `VersionVector` cannot itself travel over JSON.
+ */
+export type VersionVectorHex = string;
+
+/** Who authored a delta: a browser user, or an autonomous agent worker. */
+export type EditOrigin = 'human' | 'agent';
+
 export interface SyncMessage {
   type: 'crdt-sync';
   docId: string;
   /**
-   * Hex-encoded Loro **Version Vector** — the output of
-   * `VersionVector.encode()`, i.e. the per-peer op counters the sender already
-   * holds. This is NOT a Frontier (a Frontier is a set of op IDs at the tips of
-   * the DAG and cannot be compared without the OpLog).
+   * The sender's Loro Version Vector (see {@link VersionVectorHex}): the per-peer
+   * op counters it already holds. This is NOT a Frontier (a Frontier is a set of
+   * op IDs at the tips of the DAG and cannot be compared without the OpLog).
    *
    * The receiver diffs against it with `doc.export({ mode: 'update', from })`
    * to compute exactly the ops the sender is missing. Senders set it to their
    * version *after* applying their own edit, so a diff can never echo their own
    * ops back. Omit it on a cold join to request a full snapshot.
    */
-  versionFrom?: string;
+  versionFrom?: VersionVectorHex;
   payload: string;     // Base64 encoded binary delta
   senderId: string;
+  /**
+   * Provenance of the delta, preserved end-to-end so clients can distinguish a
+   * human edit from an agent write (e.g. to tint agent-authored ranges). Set by
+   * the server's Event Hub on fan-out; absent on frames a client sends up.
+   */
+  origin?: EditOrigin;
   timestamp: number;
 }
 

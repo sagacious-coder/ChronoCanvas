@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { LoroDoc, VersionVector } from 'loro-crdt';
+import { EventHub } from './dist/EventHub.js';
 
 const URL = `ws://127.0.0.1:${process.env.PORT}`;
 const DOC = 'harden-test';
@@ -54,6 +55,12 @@ a.edit('hello ');
 await sleep(200);
 check('peer B receives A edit', b.text() === 'hello ', `b="${b.text()}"`);
 check('peer A gets zero self-echo', a.inbox.length === 0, `inbox=${a.inbox.length}`);
+
+// The Event Hub stamps every human edit `origin: 'human'`, and `broadcast`
+// puts it on the outbound frame so a peer can tell a human write from an agent's.
+const humanSync = b.inbox.find((m) => m.type === 'crdt-sync');
+check("human edit is broadcast with origin:'human' on the wire",
+  humanSync?.origin === 'human', `origin=${humanSync?.origin}`);
 
 b.edit('world');
 await sleep(200);
@@ -172,6 +179,22 @@ probe.push('');
 await sleep(300);
 check('room evicted when empty (fresh doc for next joiner)', probe.text() === '', `"${probe.text()}"`);
 probe.ws.close();
+
+// --- Event Hub stamps the origin flag per producer class ---------------------
+// A browser peer can only ever produce `human` writes over the wire; agent
+// writes arrive in-process via `submitAgentDelta` (there is no agent WS frame).
+// So the agent side of the flag is verified by driving the Hub directly with a
+// fake sink. The on-the-wire check above already proved `broadcast` carries
+// whatever `kind` the Hub stamps onto the outbound frame — so a `kind: 'agent'`
+// write would surface as `origin: 'agent'` on the wire by the same path.
+{
+  const seen = [];
+  const hub = new EventHub(async (_docId, _bytes, _vv, origin) => { seen.push(origin.kind); });
+  await hub.submitHumanDelta(DOC, null, null, { connId: 'conn-1', ws: {}, label: 'human-1' });
+  await hub.submitAgentDelta(DOC, null, null, { agentId: 'agent-1', label: 'agent-1' });
+  check("Event Hub stamps human writes origin:'human'", seen[0] === 'human', `kind=${seen[0]}`);
+  check("Event Hub stamps agent writes origin:'agent'", seen[1] === 'agent', `kind=${seen[1]}`);
+}
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
