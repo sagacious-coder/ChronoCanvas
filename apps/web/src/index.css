@@ -2,28 +2,61 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
+.cm-editor {
   height: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
-  background-color: #020617;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 14px;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+.cm-scroller {
+  overflow: auto;
 }
 
-::-webkit-scrollbar-track {
-  background: #090d16;
+.cm-loro-cursor {
+  position: absolute;
+  border-left: 2px solid;
+  height: 1.2em;
+  pointer-events: none;
+  z-index: 10;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 4px;
+.cm-loro-cursor-label {
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: #ffffff;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  font-weight: 500;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+.loro-user-za {
+  border-color: #3b82f6;
+  background-color: #3b82f6;
+}
+
+.loro-user-mu {
+  border-color: #10b981;
+  background-color: #10b981;
+}
+
+.loro-user-agent {
+  border-color: #a855f7;
+  background-color: #a855f7;
+}
+
+.loro-selection-za {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+.loro-selection-mu {
+  background-color: rgba(16, 185, 129, 0.2);
+}
+
+.loro-selection-agent {
+  background-color: rgba(168, 85, 247, 0.2);
 }
