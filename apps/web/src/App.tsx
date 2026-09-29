@@ -1,43 +1,73 @@
 import React, { useMemo, useState } from "react";
 import { LoroDoc, Awareness } from "loro-crdt";
 import { CodeEditor, UserPresence } from "./components/CodeEditor";
+import { useLoroSync } from "./hooks/useLoroSync";
 
 export const App: React.FC = () => {
-  // Stable LoroDoc and Awareness instances
+  // Stable LoroDoc and Awareness instances across re-renders
   const { doc, awareness } = useMemo(() => {
     const lDoc = new LoroDoc();
     const lAwareness = new Awareness(lDoc.peerIdStr);
     return { doc: lDoc, awareness: lAwareness };
   }, []);
 
+  // WebSocket sync hook (Day 3 requirement)
+  const { status, stats, reconnect } = useLoroSync(doc, "ws://localhost:3001");
+
   const [activeUser] = useState<UserPresence>({
     name: "ZA",
     colorClassName: "loro-user-za",
   });
 
-  const [logMessage, setLogMessage] = useState<string>("");
+  const [localFeedback, setLocalFeedback] = useState<string>("");
 
-  // Correct Peer Simulation:
-  // An agent/teammate lives on another peer and sends update deltas via doc.import()
+  // Retain offline test simulation button for local validation
   const handleSimulateAgentInsertion = () => {
-    // 1. Create a simulated remote peer
     const peerDoc = new LoroDoc();
-    
-    // 2. Sync peerDoc with current document state
     peerDoc.import(doc.export({ mode: "snapshot" }));
 
-    // 3. The remote peer writes code
     const timestamp = new Date().toLocaleTimeString();
-    const peerText = peerDoc.getText("text");
-    peerText.insert(0, `// [Agent Checkpoint ${timestamp}] Auto-generated test function\nfunction agentTask() {\n  return "verified by Loro CRDT";\n}\n\n`);
+    const snippet = `// [Agent Checkpoint ${timestamp}] Auto-generated test function\nfunction agentTask() {\n  return "verified by Loro CRDT";\n}\n\n`;
 
-    // 4. Export the peer's delta
-    const update = peerDoc.export({ mode: "update", from: doc.oplogVersion() });
+    peerDoc.getText("text").insert(0, snippet);
 
-    // 5. Import into local doc (loro-codemirror catches this and updates the screen)
+    const update = peerDoc.export({ mode: "update" });
     doc.import(update);
+    doc.commit();
 
-    setLogMessage(`Imported ${update.length} bytes from simulated peer at ${timestamp}`);
+    setLocalFeedback(`Simulated peer inserted ${update.length} bytes at ${timestamp}`);
+  };
+
+  const getStatusBadge = () => {
+    switch (status) {
+      case "connected":
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950/80 text-emerald-400 border border-emerald-800">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            Live WebSocket Connected
+          </span>
+        );
+      case "connecting":
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-950/80 text-amber-400 border border-amber-800">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            Connecting to ws://localhost:3001...
+          </span>
+        );
+      case "disconnected":
+      case "error":
+      default:
+        return (
+          <button
+            onClick={reconnect}
+            title="Click to reconnect"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700 transition cursor-pointer"
+          >
+            <span className="w-2 h-2 rounded-full bg-neutral-500" />
+            Offline Mode (Click to Connect)
+          </button>
+        );
+    }
   };
 
   return (
@@ -45,12 +75,13 @@ export const App: React.FC = () => {
       <header className="w-full max-w-5xl flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">ChronoCanvas</h1>
-          <p className="text-sm text-neutral-400">Day 2 Milestone: CodeMirror 6 + Loro CRDT Mounting</p>
+          <p className="text-sm text-neutral-400">Day 3 Milestone: WebSocket Binary Delta Sync (Loro CRDT)</p>
         </div>
         <div className="flex items-center gap-3">
+          {getStatusBadge()}
           <span className="flex items-center gap-2 text-xs bg-neutral-800 px-3 py-1.5 rounded-md border border-neutral-700">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
-            Active Peer: <strong>{activeUser.name}</strong>
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-500" />
+            Peer: <strong>{activeUser.name}</strong>
           </span>
           <button
             onClick={handleSimulateAgentInsertion}
@@ -61,11 +92,22 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {logMessage && (
-        <div className="w-full max-w-5xl mb-3 text-xs text-emerald-400 font-mono bg-neutral-950/60 border border-neutral-800 px-3 py-1.5 rounded">
-          ✓ {logMessage}
+      {/* Sync Telemetry Bar */}
+      <div className="w-full max-w-5xl mb-3 flex items-center justify-between text-xs font-mono bg-neutral-950/70 border border-neutral-800 px-4 py-2 rounded-lg text-neutral-400">
+        <div className="flex gap-4">
+          <span>Sent: <strong className="text-neutral-200">{stats.bytesSent} B</strong> ({stats.updatesSent} deltas)</span>
+          <span>Received: <strong className="text-neutral-200">{stats.bytesReceived} B</strong> ({stats.updatesReceived} deltas)</span>
         </div>
-      )}
+        <div>
+          {stats.lastSyncAt ? (
+            <span className="text-emerald-400">Last Synced: {stats.lastSyncAt.toLocaleTimeString()}</span>
+          ) : localFeedback ? (
+            <span className="text-indigo-400">{localFeedback}</span>
+          ) : (
+            <span className="text-neutral-500">Ready to synchronize</span>
+          )}
+        </div>
+      </div>
 
       <main className="w-full max-w-5xl">
         <CodeEditor
