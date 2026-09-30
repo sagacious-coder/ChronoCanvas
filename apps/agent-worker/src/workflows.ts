@@ -1,5 +1,5 @@
 /**
- * ChronoCanvas agent-worker — Temporal Workflows.
+ * ChronoCanvas agent-worker — Temporal Workflows (Day 7: Checkpoint Rollback).
  *
  * **Temporal workflow sandbox rules** that affect this file:
  *
@@ -9,11 +9,19 @@
  *      `setTimeout` are replaced by Temporal's deterministic equivalents.
  *   3. Activity stubs are created from a type-only import of the activity
  *      module; the runtime never evaluates the actual activity implementations.
+ *   4. **All Loro mutations and `doc.checkout()` live in activities.ts** —
+ *      never in this file.  The workflow's only job is to sequence the two
+ *      activities and propagate errors cleanly into Temporal history.
  *
  * Workflow surface:
  *   - `checkpointWorkflow`  — reads the Loro frontier and returns a checkpoint.
- *   - `agentSyncWorkflow`   — calls the LLM, appends its response to the canvas,
- *                             broadcasts the incremental CRDT update.
+ *   - `agentSyncWorkflow`   — (Day 7) two-phase protocol:
+ *       Phase 1 — `captureCheckpoint`: snapshot the current CRDT frontier.
+ *       Phase 2 — `generateAndInjectResponse`: call the LLM, write the result
+ *                  to the Loro canvas, broadcast the delta.  On any failure the
+ *                  activity itself calls `doc.checkout(savedFrontiers)` and
+ *                  broadcasts the reverted state before re-throwing, so Temporal
+ *                  records the failure durably without any human edits being lost.
  */
 
 import {
@@ -136,12 +144,23 @@ const DEFAULT_INSTRUCTION =
   'Read the provided canvas text and write a short, creative 1-sentence continuation.';
 
 /**
- * `agentSyncWorkflow` — the main agent write workflow.
+ * `agentSyncWorkflow` — Day 7 two-phase agent write with checkpoint rollback.
  *
- * Calls the LLM via OpenRouter, appends its response to the Loro
- * `'chrono-canvas-default'` text container, and broadcasts the incremental
- * CRDT update to the backend WebSocket server so all connected clients see
- * the agent's contribution with `origin: 'agent'`.
+ * **Phase 1 — Checkpoint** (`captureCheckpoint`):
+ *   Reads the current Loro frontier from the supplied `stateBytes` and records
+ *   it as a durable Temporal history event.  The result is a JSON string
+ *   encoding `{ docId, capturedAt, frontiers[] }` that the next phase uses as
+ *   the rollback target if anything goes wrong.
+ *
+ * **Phase 2 — Generate & Inject** (`generateAndInjectResponse`):
+ *   Calls the LLM via OpenRouter, appends its response to the Loro
+ *   `'chrono-canvas-default'` text container, and broadcasts the incremental
+ *   CRDT update to the backend WebSocket server.  The activity receives the
+ *   checkpoint JSON from Phase 1 so that, on **any** failure (network error,
+ *   LLM timeout, empty response, simulated crash), it can:
+ *     1. Call `doc.checkout(savedFrontiers)` to revert the agent's ops.
+ *     2. Broadcast the reverted state so all clients heal instantly.
+ *     3. Re-throw, causing Temporal to record this activity execution as failed.
  *
  * Returns the raw LLM-generated text for inspection in Temporal history.
  *
@@ -162,12 +181,34 @@ export async function agentSyncWorkflow(
 ): Promise<string> {
   const instruction = input.systemInstruction ?? DEFAULT_INSTRUCTION;
 
-  // Use the LLM-specific proxy (longer timeout, capped retries).
-  const generatedText = await generateAndInjectResponseLLM(
-    input.docId,
-    input.stateBytes,
-    instruction,
-  );
+  // ---- Phase 1: Capture checkpoint -----------------------------------------
+  //
+  // Use the fast proxy (30 s timeout) — this is a read-only Loro op.
+  // The resulting JSON is passed directly into Phase 2, making the rollback
+  // target a durable, inspectable entry in Temporal's workflow history.
+  const checkpointJson = await captureCheckpoint(input.docId, input.stateBytes);
 
-  return generatedText;
+  // ---- Phase 2: Generate, inject, and broadcast (with rollback on failure) --
+  //
+  // The LLM proxy carries the longer timeout and capped retry policy.
+  // `generateAndInjectResponse` owns all Loro mutations; the workflow never
+  // touches `doc` or `doc.checkout()` directly (Temporal determinism rule).
+  try {
+    const generatedText = await generateAndInjectResponseLLM(
+      input.docId,
+      input.stateBytes,
+      instruction,
+      checkpointJson,
+    );
+    return generatedText;
+  } catch (err) {
+    // The activity already performed `doc.checkout()` and broadcast the reverted
+    // state before throwing.  Here we only re-throw with a workflow-level context
+    // message so the Temporal UI shows a clear failure reason.
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[agentSyncWorkflow] Phase 2 failed for doc "${input.docId}" — ` +
+      `rollback was executed by the activity. Cause: ${cause}`,
+    );
+  }
 }
