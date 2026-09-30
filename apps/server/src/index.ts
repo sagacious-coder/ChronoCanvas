@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 import { VersionVector } from 'loro-crdt';
@@ -13,6 +14,7 @@ import {
   errMsg,
 } from './hub.js';
 import { eventHub } from './EventHub.js';
+import { createApiHandler } from './api.js';
 
 /**
  * ChronoCanvas WebSocket transport.
@@ -24,13 +26,25 @@ import { eventHub } from './EventHub.js';
  * agent worker can reuse it without booting a socket server.
  */
 
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.PORT ?? 3001);
 
 /** A live client socket, tagged with its identity and room membership. */
 type ClientSocket = WebSocket & { connId: string; joinedRooms: Set<string> };
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`🚀 ChronoCanvas WebSocket Server running on ws://localhost:${PORT}`);
+/**
+ * Shared HTTP server — handles both WebSocket upgrades (via `ws`) and the
+ * REST API (via `apiHandler`). A single port serves both protocols:
+ * the `ws` library intercepts Upgrade requests before the `request` event
+ * fires, so REST and WS never collide.
+ */
+const httpServer = createServer(createApiHandler());
+const wss = new WebSocketServer({ server: httpServer });
+
+httpServer.listen(PORT, () => {
+  console.log(`🚀 ChronoCanvas server running on port ${PORT}`);
+  console.log(`   WS  → ws://localhost:${PORT}`);
+  console.log(`   API → http://localhost:${PORT}/api/ask-ai`);
+});
 
 wss.on('connection', (socket: WebSocket, request) => {
   const ws = socket as ClientSocket;

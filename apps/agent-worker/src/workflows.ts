@@ -1,5 +1,5 @@
 /**
- * ChronoCanvas agent-worker — Temporal Workflows (Day 5).
+ * ChronoCanvas agent-worker — Temporal Workflows.
  *
  * **Temporal workflow sandbox rules** that affect this file:
  *
@@ -10,13 +10,10 @@
  *   3. Activity stubs are created from a type-only import of the activity
  *      module; the runtime never evaluates the actual activity implementations.
  *
- * Current workflow surface (Day 5 milestone):
- *   - `checkpointWorkflow` — proxies `captureCheckpoint` and returns the result.
- *
- * Extension seam (Day 6+):
- *   - Add activities for `commitAgentDelta` / `broadcastViaWebSocket` here once
- *     the agent write path is wired up; the proxy pattern below scales to any
- *     number of activity signatures without ceremony.
+ * Workflow surface:
+ *   - `checkpointWorkflow`  — reads the Loro frontier and returns a checkpoint.
+ *   - `agentSyncWorkflow`   — calls the LLM, appends its response to the canvas,
+ *                             broadcasts the incremental CRDT update.
  */
 
 import {
@@ -32,28 +29,44 @@ import type * as activitiesModule from './activities';
 // ---- Activity options -------------------------------------------------------
 
 /**
- * Default scheduling options for all activities in this package.
- *
- * `startToCloseTimeout` is the wall-clock budget for a single activity attempt.
- * Keep it generous enough for large state imports while still failing fast on a
- * hung wasm call.  The retry policy uses Temporal's default exponential
- * back-off (initial 1 s, cap 100 s, unlimited retries) which is appropriate
- * for idempotent read activities like `captureCheckpoint`.
+ * Options for fast, idempotent activities (Loro import, frontier read).
  */
 const defaultActivityOptions: ActivityOptions = {
   startToCloseTimeout: '30 seconds',
   heartbeatTimeout: '10 seconds',
 };
 
-// ---- Activity proxy ---------------------------------------------------------
+/**
+ * Options for the LLM generation activity.
+ *
+ * LLM calls via OpenRouter can take significantly longer than a local wasm
+ * operation.  `startToCloseTimeout` is generous to accommodate cold-start
+ * latency on free-tier models; `heartbeatTimeout` keeps Temporal informed
+ * during the blocking HTTP call so it can detect a hung worker.
+ */
+const llmActivityOptions: ActivityOptions = {
+  startToCloseTimeout: '3 minutes',
+  heartbeatTimeout: '30 seconds',
+  retry: {
+    // Retrying a generation that timed out can produce duplicate canvas
+    // content.  Cap at 2 attempts so a transient error is recovered, but
+    // an infinite retry loop cannot spam the canvas.
+    maximumAttempts: 2,
+  },
+};
+
+// ---- Activity proxies -------------------------------------------------------
 
 /**
- * Typed stub for every activity exported from `./activities`.
+ * Typed stubs for every activity exported from `./activities`.
  * Add new activities to that module; they appear here automatically.
  */
-const { captureCheckpoint } = proxyActivities<typeof activitiesModule>(
-  defaultActivityOptions,
-);
+const { captureCheckpoint, generateAndInjectResponse } =
+  proxyActivities<typeof activitiesModule>(defaultActivityOptions);
+
+// For the LLM activity we need a separate proxy so it carries its own options.
+const { generateAndInjectResponse: generateAndInjectResponseLLM } =
+  proxyActivities<typeof activitiesModule>(llmActivityOptions);
 
 // ---- Workflow definitions ---------------------------------------------------
 
@@ -80,28 +93,81 @@ export interface CheckpointWorkflowInput {
 }
 
 /**
- * `checkpointWorkflow` — Day 5 milestone workflow.
- *
- * Reads the causal frontier of a Loro document (provided as a serialised state
- * blob) and records it as a durable Temporal history event.  The returned JSON
- * string deserialises to {@link LoroCheckpoint} (defined in `types.ts`).
+ * `checkpointWorkflow` — reads the Loro frontier and records it as a durable
+ * Temporal history event.
  *
  * Workflow ID convention: `"checkpoint-{docId}-{timestamp}"`
- *
- * @example Trigger from a Temporal client:
- * ```ts
- * const handle = await client.workflow.start(checkpointWorkflow, {
- *   taskQueue: 'chrono-agent',
- *   workflowId: `checkpoint-${docId}-${Date.now()}`,
- *   args: [{ docId, stateBytes: Array.from(snapshotBytes) }],
- * });
- * const checkpoint = await handle.result();
- * console.log(JSON.parse(checkpoint));
- * ```
  */
 export async function checkpointWorkflow(
   input: CheckpointWorkflowInput,
 ): Promise<string> {
   const checkpointJson = await captureCheckpoint(input.docId, input.stateBytes);
   return checkpointJson;
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * Input contract for {@link agentSyncWorkflow}.
+ */
+export interface AgentSyncWorkflowInput {
+  /** Stable document identifier — stored on the AgentSyncEnvelope. */
+  docId: string;
+  /**
+   * Current Loro canvas state, serialised as a plain number array.
+   * Pass `[]` when triggering against an empty document.
+   *
+   * ```ts
+   * const stateBytes = Array.from(doc.export({ mode: 'snapshot' }));
+   * ```
+   */
+  stateBytes: number[];
+  /**
+   * System-role instruction sent to the LLM.
+   *
+   * @default 'Read the provided canvas text and write a short, creative
+   *           1-sentence continuation.'
+   */
+  systemInstruction?: string;
+}
+
+/** Default system instruction when none is provided by the caller. */
+const DEFAULT_INSTRUCTION =
+  'Read the provided canvas text and write a short, creative 1-sentence continuation.';
+
+/**
+ * `agentSyncWorkflow` — the main agent write workflow.
+ *
+ * Calls the LLM via OpenRouter, appends its response to the Loro
+ * `'chrono-canvas-default'` text container, and broadcasts the incremental
+ * CRDT update to the backend WebSocket server so all connected clients see
+ * the agent's contribution with `origin: 'agent'`.
+ *
+ * Returns the raw LLM-generated text for inspection in Temporal history.
+ *
+ * Workflow ID convention: `"agent-sync-{docId}-{timestamp}"`
+ *
+ * @example
+ * ```ts
+ * const handle = await client.workflow.start(agentSyncWorkflow, {
+ *   taskQueue: 'chrono-agent',
+ *   workflowId: `agent-sync-${docId}-${Date.now()}`,
+ *   args: [{ docId, stateBytes: Array.from(snapshotBytes) }],
+ * });
+ * const generatedText = await handle.result();
+ * ```
+ */
+export async function agentSyncWorkflow(
+  input: AgentSyncWorkflowInput,
+): Promise<string> {
+  const instruction = input.systemInstruction ?? DEFAULT_INSTRUCTION;
+
+  // Use the LLM-specific proxy (longer timeout, capped retries).
+  const generatedText = await generateAndInjectResponseLLM(
+    input.docId,
+    input.stateBytes,
+    instruction,
+  );
+
+  return generatedText;
 }

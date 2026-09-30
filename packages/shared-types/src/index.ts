@@ -94,3 +94,31 @@ export type ChronoWebSocketMessage =
   | AwarenessMessage
   | AgentTaskRequest
   | AgentTaskStatus;
+
+// ---- HTTP API contracts -----------------------------------------------------
+
+/**
+ * Request body for `POST /api/ask-ai`.
+ *
+ * The frontend exports the current Loro snapshot as a `Uint8Array` and
+ * converts it to a plain number array (`Array.from(bytes)`) so it is
+ * JSON-serialisable.  The server reconstructs `new Uint8Array(stateBytes)`
+ * before passing it to the Temporal activity.
+ */
+export interface AskAiRequest {
+  /** The Loro document room id (must match the WebSocket room the user is in). */
+  docId: string;
+  /**
+   * Current Loro snapshot as a plain number array.
+   * Convert from Uint8Array: `Array.from(doc.export({ mode: 'snapshot' }))`.
+   */
+  stateBytes: number[];
+}
+
+/** Success response body from `POST /api/ask-ai`. */
+export interface AskAiResponse {
+  /** The Temporal workflow id that was started. */
+  workflowId: string;
+  /** ISO-8601 timestamp of when the workflow was submitted. */
+  submittedAt: string;
+}

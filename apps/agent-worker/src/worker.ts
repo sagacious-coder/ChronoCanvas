@@ -15,7 +15,7 @@
  * Environment variables (all optional, with defaults):
  *   - `TEMPORAL_ADDRESS`  — Temporal server address (default: `localhost:7233`)
  *   - `TEMPORAL_NAMESPACE`— Namespace to run under (default: `default`)
- *   - `TEMPORAL_TASK_QUEUE`— Task queue name (default: `chrono-agent`)
+ *   - `TEMPORAL_TASK_QUEUE`— Task queue name (default: `agent-queue`)
  *   - `CHRONO_BACKEND_URL` — WebSocket backend (default: `ws://localhost:3001`)
  */
 
@@ -28,7 +28,7 @@ import { getBackendSocket } from './connection';
 
 const TEMPORAL_ADDRESS   = process.env.TEMPORAL_ADDRESS    ?? 'localhost:7233';
 const TEMPORAL_NAMESPACE = process.env.TEMPORAL_NAMESPACE  ?? 'default';
-const TASK_QUEUE         = process.env.TEMPORAL_TASK_QUEUE ?? 'chrono-agent';
+const TASK_QUEUE         = process.env.TEMPORAL_TASK_QUEUE ?? 'agent-queue';
 
 // ---- Bootstrap --------------------------------------------------------------
 
