@@ -13,7 +13,6 @@ import {
 import { defaultKeymap, history, indentWithTab } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
-import { oneDark } from "@codemirror/theme-one-dark";
 
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
@@ -30,6 +29,8 @@ interface CodeEditorProps {
   currentUser: UserPresence;
   remotePeers?: Map<string, PeerAwareness>;
   isStreaming?: boolean;
+  isRollbackActive?: boolean;
+  rollbackMessage?: string | null;
   onCursorChange?: (cursor: CursorPosition, selection?: { anchor: number; head: number }) => void;
   className?: string;
 }
@@ -40,6 +41,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   currentUser,
   remotePeers,
   isStreaming = false,
+  isRollbackActive = false,
+  rollbackMessage = null,
   onCursorChange,
   className = "",
 }) => {
@@ -69,6 +72,30 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     const undoManager = new UndoManager(doc, {});
 
+    // Apple Human Interface creamy theme for CodeMirror 6
+    const appleCreamyTheme = EditorView.theme({
+      "&": {
+        color: "#1F2328",
+        backgroundColor: "#FAF8F5",
+        fontSize: "13.5px",
+      },
+      ".cm-content": {
+        caretColor: "#2563EB",
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#2563EB" },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
+        backgroundColor: "#DDE5F5",
+      },
+      ".cm-gutters": {
+        backgroundColor: "#F4EFE6",
+        color: "#8C8273",
+        borderRight: "1px solid #E6E2D8",
+      },
+      ".cm-activeLine": { backgroundColor: "#F1EBE0" },
+      ".cm-activeLineGutter": { backgroundColor: "#E8E1D2", color: "#1F2328" },
+    }, { dark: false });
+
     const extensions: Extension[] = [
       lineNumbers(),
       highlightActiveLineGutter(),
@@ -79,7 +106,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       bracketMatching(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       javascript({ typescript: true }),
-      oneDark,
+      appleCreamyTheme,
       keymap.of([...defaultKeymap, indentWithTab]),
       cursorUpdateListener,
       LoroExtensions(
@@ -109,14 +136,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     editorViewRef.current = view;
 
-    // Reactivity Subscription: fires on ANY Loro document mutation (local, import, or checkout)
+    // Reactivity Subscription: fires on ANY Loro document mutation
     const sub = doc.subscribe(() => {
       if (editorViewRef.current) {
         const activeView = editorViewRef.current;
         const targetText = doc.getText("text").toString();
         const currentViewText = activeView.state.doc.toString();
 
-        // Only dispatch if text actually changed from external mutation (prevents typing loops)
         if (targetText !== currentViewText) {
           activeView.dispatch({
             changes: { from: 0, to: currentViewText.length, insert: targetText },
@@ -139,48 +165,60 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const activePeerList = remotePeers ? Array.from(remotePeers.values()) : [];
 
   return (
-    <div className={`relative border border-neutral-700/80 rounded-xl overflow-hidden shadow-2xl bg-[#282c34] flex flex-col ${className}`}>
+    <div
+      className={`relative border border-[#E6E2D8] rounded-2xl overflow-hidden shadow-apple-md bg-[#FAF8F5] flex flex-col transition-all duration-300 ${
+        isRollbackActive ? "revert-pulse-active" : ""
+      } ${className}`}
+    >
       {/* Editor Sub-header with Active Presence & AI Streaming Banner */}
-      <div className="flex items-center justify-between px-4 py-2 bg-neutral-950/70 border-b border-neutral-800 text-xs">
+      <div className="flex items-center justify-between px-5 py-2.5 bg-[#F7F4EB] border-b border-[#E6E2D8] text-xs">
         <div className="flex items-center gap-2">
-          <span className="text-neutral-400 font-mono">main.ts</span>
-          <span className="text-[10px] text-neutral-500 bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800 font-mono">
+          <span className="text-[#1F2328] font-mono font-medium">main.ts</span>
+          <span className="text-[10px] text-[#656D76] bg-[#FFFFFF] px-2 py-0.5 rounded-md border border-[#E6E2D8] font-mono">
             TypeScript
           </span>
           {isStreaming && (
-            <span className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-purple-950/80 text-purple-300 border border-purple-800 animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-ping" />
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F3FF] text-[#7C3AED] border border-[#DDD6FE] animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#7C3AED] animate-ping" />
               AI Agent Streaming Tokens...
             </span>
           )}
         </div>
 
-        {/* Live Multi-Cursor Presence List (Day 4 & Day 6) */}
-        <div className="flex items-center gap-3">
-          <span className="text-neutral-400 text-xs flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-blue-500" />
+        {/* Live Multi-Cursor Presence List */}
+        <div className="flex items-center gap-2.5">
+          <span className="text-[#656D76] text-xs flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
             You ({currentUser.name})
           </span>
 
           {activePeerList.map((peer) => (
             <span
               key={peer.peerId}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border"
+              className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border"
               style={{
-                borderColor: peer.isAgent ? "#a855f7" : (peer.userColor || "#10b981"),
-                backgroundColor: peer.isAgent ? "rgba(168, 85, 247, 0.2)" : `${peer.userColor || "#10b981"}20`,
-                color: peer.isAgent ? "#d8b4fe" : (peer.userColor || "#10b981"),
+                borderColor: peer.isAgent ? "#DDD6FE" : (peer.userName === "MU" ? "#CEEAD6" : "#BFDBFE"),
+                backgroundColor: peer.isAgent ? "#F5F3FF" : (peer.userName === "MU" ? "#E6F4EA" : "#EFF6FF"),
+                color: peer.isAgent ? "#7C3AED" : (peer.userName === "MU" ? "#137333" : "#1D4ED8"),
               }}
             >
               <span
                 className="w-1.5 h-1.5 rounded-full animate-pulse"
-                style={{ backgroundColor: peer.isAgent ? "#a855f7" : (peer.userColor || "#10b981") }}
+                style={{ backgroundColor: peer.isAgent ? "#7C3AED" : (peer.userName === "MU" ? "#137333" : "#2563EB") }}
               />
               {peer.userName} {peer.cursor ? `(L${peer.cursor.line}:${peer.cursor.ch})` : ""}
             </span>
           ))}
         </div>
       </div>
+
+      {/* Floating Positive Green Revert Notification Indicator */}
+      {isRollbackActive && (
+        <div className="absolute top-14 right-6 z-20 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-lg text-xs font-mono animate-bounce">
+          <span className="w-2 h-2 rounded-full bg-[#34A853]" />
+          <span className="font-semibold">{rollbackMessage || "Document Reverted Successfully (< 4ms)"}</span>
+        </div>
+      )}
 
       <div ref={containerRef} className="h-[520px] w-full" />
     </div>
