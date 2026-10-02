@@ -3,7 +3,7 @@ import { LoroDoc, Awareness } from "loro-crdt";
 import { CodeEditor, UserPresence } from "./components/CodeEditor";
 import { AgentControlPanel } from "./components/AgentControlPanel";
 import { useLoroSync } from "./hooks/useLoroSync";
-import { CursorPosition } from "./types/shared";
+import { CursorPosition } from "@chronocanvas/shared-types";
 
 export const App: React.FC = () => {
   // Stable LoroDoc and Awareness instances across re-renders

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
-import { AgentTaskStatus, PeerAwareness } from "../types/shared";
+import { AgentTaskStatus, PeerAwareness } from "@chronocanvas/shared-types";
 
 export function useLoroSync(doc: LoroDoc, serverUrl = "ws://localhost:3001") {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");

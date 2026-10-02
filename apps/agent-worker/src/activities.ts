@@ -145,7 +145,7 @@ const toB64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64
  *   2. Deserialise `checkpointJson` into a {@link LoroCheckpoint} and decode
  *      the saved frontiers into Loro's native `{ peer: bigint; counter }[]`
  *      format.  These are the coordinates we roll back to on failure.
- *   3. Read the current canvas text from the `'chrono-canvas-default'` container.
+ *   3. Read the current canvas text from the `'codemirror'` container.
  *   4. **[CRASH FENCE]** If `SIMULATE_AGENT_CRASH=true`, throw immediately to
  *      exercise the rollback path without a live LLM.
  *   5. Call the LLM via OpenRouter.
@@ -224,7 +224,9 @@ export async function generateAndInjectResponse(
   }
 
   // ---- 3. Read canvas text --------------------------------------------------
-  const textContainer = doc.getText('chrono-canvas-default');
+  // The "codemirror" container is the single canonical text container owned by
+  // loro-codemirror's LoroSyncPlugin. All editor clients write here.
+  const textContainer = doc.getText('codemirror');
   const currentText = textContainer.toString();
 
   console.log(

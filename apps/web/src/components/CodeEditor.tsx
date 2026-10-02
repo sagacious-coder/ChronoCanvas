@@ -17,7 +17,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
-import { CursorPosition, PeerAwareness } from "../types/shared";
+import { CursorPosition, PeerAwareness } from "@chronocanvas/shared-types";
 
 export interface UserPresence {
   name: string;
@@ -44,7 +44,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   className = "",
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const editorViewRef = useRef<EditorView | null>(null);
 
   // Broadcast cursor movements via updateListener
   const cursorUpdateListener = EditorView.updateListener.of((update: ViewUpdate) => {
@@ -63,6 +62,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       );
     }
   });
+
+
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -95,7 +96,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       ),
     ];
 
-    const initialText = doc.getText("text").toString();
+    // LoroExtensions (loro-codemirror) owns the "codemirror" text container and
+    // manages the full Loro↔CodeMirror bridge internally — including local, import,
+    // and checkout events — via LoroSyncPluginValue. We must seed CM with the same
+    // container key the library reads, not a separate "text" container.
+    const initialText = doc.getText("codemirror").toString();
 
     const state = EditorState.create({
       doc: initialText,
@@ -107,32 +112,16 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       parent: containerRef.current,
     });
 
-    editorViewRef.current = view;
-
-    // Reactivity Subscription: fires on ANY Loro document mutation (local, import, or checkout)
-    const sub = doc.subscribe(() => {
-      if (editorViewRef.current) {
-        const activeView = editorViewRef.current;
-        const targetText = doc.getText("text").toString();
-        const currentViewText = activeView.state.doc.toString();
-
-        // Only dispatch if text actually changed from external mutation (prevents typing loops)
-        if (targetText !== currentViewText) {
-          activeView.dispatch({
-            changes: { from: 0, to: currentViewText.length, insert: targetText },
-          });
-        }
-      }
-    });
+    // NOTE: No manual doc.subscribe here.
+    // LoroExtensions (LoroSyncPluginValue inside loro-codemirror) installs its own
+    // doc.subscribe in its constructor and handles all Loro→CM syncing internally
+    // for import and checkout events using loroSyncAnnotation to prevent loops.
+    // Adding a second subscriber here that reads a *different* container key
+    // ("text" vs. "codemirror") creates a dead-letter sync that never fires
+    // correctly and fights the library on every remote import.
 
     return () => {
-      if (typeof sub === "function") {
-        sub();
-      } else if (typeof sub === "number" && typeof (doc as any).unsubscribe === "function") {
-        (doc as any).unsubscribe(sub);
-      }
       view.destroy();
-      editorViewRef.current = null;
     };
   }, [doc, awareness, currentUser]);
 

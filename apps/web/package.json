@@ -10,6 +10,7 @@
     "mock-server": "node scripts/mock-server.js"
   },
   "dependencies": {
+    "@chronocanvas/shared-types": "workspace:*",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/lang-javascript": "^6.2.3",
     "@codemirror/language": "^6.11.0",

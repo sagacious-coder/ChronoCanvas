@@ -46,7 +46,7 @@ const SYSTEM_INSTRUCTION =
 
 let _temporalClient: Client | null = null;
 
-async function getTemporalClient(): Promise<Client> {
+export async function getTemporalClient(): Promise<Client> {
   if (_temporalClient) return _temporalClient;
   const connection = await Connection.connect({ address: TEMPORAL_ADDRESS });
   _temporalClient = new Client({ connection, namespace: TEMPORAL_NAMESPACE });

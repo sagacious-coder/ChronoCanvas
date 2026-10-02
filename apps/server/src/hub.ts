@@ -290,7 +290,17 @@ export function applyDelta(
   if (self && (sourceVV || (imported && imported.size))) {
     // Version vectors held on member records are treated as immutable — a
     // fan-out shares one instance across members — so copy before mutating.
-    const owned = sourceVV ?? new VersionVector(self.vv);
+    //
+    // NOTE(loro-crdt 1.16.3 footgun): the `VersionVector` constructor's .d.ts
+    // advertises a `VersionVector` overload, but at runtime passing a
+    // VersionVector makes the wasm ctor fall through to its "treat the arg as a
+    // Map" branch and call `.entries()` on it — a method a VersionVector does not
+    // have — throwing `getObject(...).entries is not a function`. That throw
+    // surfaces as "[room:…] write task failed" (enqueue's catch) and silently
+    // drops the edit's fan-out. Browser frames carry no `versionFrom`, so this
+    // null branch is the COMMON path, not an edge case — every human keystroke
+    // hit it. Clone via an encode/decode round-trip, which copies cleanly.
+    const owned = sourceVV ?? VersionVector.decode(self.vv.encode());
     coverImported(owned, imported);
     self.vv = owned;
     if (sourceVV) self.needsSnapshot = false; // it told us where it is

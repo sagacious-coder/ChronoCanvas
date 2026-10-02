@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { AgentTaskStatus } from "../types/shared";
+import { AgentTaskStatus } from "@chronocanvas/shared-types";
 
 interface AgentControlPanelProps {
   onTriggerTask: (prompt: string, simulateFailure?: boolean) => void;

@@ -26,6 +26,7 @@
 
 import {
   proxyActivities,
+  ApplicationFailure,
   type ActivityOptions,
 } from '@temporalio/workflow';
 
@@ -203,10 +204,19 @@ export async function agentSyncWorkflow(
     return generatedText;
   } catch (err) {
     // The activity already performed `doc.checkout()` and broadcast the reverted
-    // state before throwing.  Here we only re-throw with a workflow-level context
-    // message so the Temporal UI shows a clear failure reason.
+    // state before throwing. Re-throw as a NON-RETRYABLE ApplicationFailure so the
+    // Workflow EXECUTION fails terminally.
+    //
+    // Gotcha (Temporal TS SDK): throwing a plain `Error` from workflow code does
+    // NOT fail the execution — a non-TemporalFailure is treated as a (possibly
+    // transient) Workflow TASK failure and retried indefinitely. The execution
+    // then never reaches a terminal state, so the server's `await handle.result()`
+    // never resolves or rejects and the "Generating…" badge hangs forever.
+    // `ApplicationFailure` IS a TemporalFailure, and `.nonRetryable` guarantees no
+    // workflow-level retry, so the execution fails at once, `handle.result()`
+    // rejects, and index.ts flips the UI to 'rolled-back'.
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(
+    throw ApplicationFailure.nonRetryable(
       `[agentSyncWorkflow] Phase 2 failed for doc "${input.docId}" — ` +
       `rollback was executed by the activity. Cause: ${cause}`,
     );

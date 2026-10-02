@@ -4,7 +4,8 @@ import {
   AgentTaskRequest,
   AgentTaskStatus,
   PeerAwareness,
-} from "../types/shared";
+  SyncMessage,
+} from "@chronocanvas/shared-types";
 
 export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
 
@@ -18,6 +19,8 @@ export interface SyncStats {
 
 export interface LoroSyncOptions {
   url?: string;
+  /** The Loro document room id to join. Must match the server-side room. */
+  docId?: string;
   autoReconnect?: boolean;
   reconnectIntervalMs?: number;
   onStatusChange?: (status: ConnectionStatus) => void;
@@ -29,6 +32,8 @@ export interface LoroSyncOptions {
 export class LoroSyncClient {
   private doc: LoroDoc;
   private url: string;
+  /** Room id sent in every crdt-sync frame so the server can route to the right DocumentRoom. */
+  private docId: string;
   private ws: WebSocket | null = null;
   private lastVersion: VersionVector | undefined;
   private unsubscribeDoc: (() => void) | null = null;
@@ -49,8 +54,10 @@ export class LoroSyncClient {
   constructor(doc: LoroDoc, options: LoroSyncOptions = {}) {
     this.doc = doc;
     this.url = options.url || "ws://localhost:3001";
+    this.docId = options.docId || "chrono-canvas-default";
     this.options = {
       url: this.url,
+      docId: this.docId,
       autoReconnect: options.autoReconnect ?? true,
       reconnectIntervalMs: options.reconnectIntervalMs ?? 3000,
       onStatusChange: options.onStatusChange || (() => {}),
@@ -96,75 +103,59 @@ export class LoroSyncClient {
 
     try {
       this.ws = new WebSocket(this.url);
-      this.ws.binaryType = "arraybuffer";
+      // Do NOT set binaryType — the server sends JSON-enveloped crdt-sync frames
+      // (base64 payload), never raw binary. Keeping the default "blob" type means
+      // we won't accidentally try to import a JSON string as Loro bytes.
 
       this.ws.onopen = () => {
         this.setStatus("connected");
-        // On connect, export current state snapshot to synchronize with server
+        // Send the current snapshot as a crdt-sync JSON frame so the server can
+        // register this connection in the correct DocumentRoom and seed its LoroDoc.
+        // Raw binary frames are rejected by the server (no docId to route them).
         const snapshot = this.doc.export({ mode: "snapshot" });
         if (snapshot.length > 0 && this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(snapshot);
-          this.stats.bytesSent += snapshot.length;
-          this.stats.updatesSent += 1;
-          this.stats.lastSyncAt = new Date();
-          this.options.onStatsChange({ ...this.stats });
+          this.sendCrdtFrame(snapshot);
         }
       };
 
-      this.ws.onmessage = async (event) => {
-        // Handle incoming binary CRDT deltas
-        if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-          let buffer: ArrayBuffer;
-          if (event.data instanceof ArrayBuffer) {
-            buffer = event.data;
-          } else {
-            buffer = await event.data.arrayBuffer();
-          }
-
-          const update = new Uint8Array(buffer);
-          if (update.length === 0) return;
-
-          try {
-            this.doc.import(update);
-            this.doc.commit();
-
-            // Advance local version vector checkpoint
-            this.lastVersion = this.doc.version();
-
-            this.stats.bytesReceived += update.length;
-            this.stats.updatesReceived += 1;
-            this.stats.lastSyncAt = new Date();
-            this.options.onStatsChange({ ...this.stats });
-          } catch (err) {
-            console.error("[LoroSync] Error importing remote delta:", err);
-          }
+      this.ws.onmessage = (event) => {
+        // The server always sends JSON-framed messages — never raw binary.
+        if (typeof event.data !== "string") {
+          console.warn("[LoroSync] Unexpected non-string frame from server, ignoring.");
           return;
         }
 
-        // Handle incoming JSON messages (Awareness & Agent workflows)
-        if (typeof event.data === "string") {
-          try {
-            const message = JSON.parse(event.data);
-            if (message.type === "awareness-update") {
-              this.options.onRemoteAwareness(message.peer);
-            } else if (message.type === "agent-task-status") {
-              this.options.onAgentStatusChange(message);
-            } else if (message.type === "agent-token-stream") {
-              // Ingest streaming token from AI worker into Loro document
-              if (message.chunk) {
-                const text = this.doc.getText("text");
-                text.insert(text.length, message.chunk);
-                this.doc.commit();
-              }
-            } else if (message.type === "crdt-sync") {
-              const binary = Uint8Array.from(atob(message.payload), (c) => c.charCodeAt(0));
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "crdt-sync") {
+            // Decode the base64 payload and import the Loro delta/snapshot.
+            const binary = Uint8Array.from(atob(message.payload), (c) => c.charCodeAt(0));
+            if (binary.length > 0) {
               this.doc.import(binary);
               this.doc.commit();
               this.lastVersion = this.doc.version();
+              this.stats.bytesReceived += binary.length;
+              this.stats.updatesReceived += 1;
+              this.stats.lastSyncAt = new Date();
+              this.options.onStatsChange({ ...this.stats });
             }
-          } catch (err) {
-            console.error("[LoroSync] Error parsing JSON message:", err);
+          } else if (message.type === "awareness-update") {
+            this.options.onRemoteAwareness(message.peer);
+          } else if (message.type === "agent-task-status") {
+            this.options.onAgentStatusChange(message);
+          } else if (message.type === "agent-token-stream") {
+            // Ingest streaming token from AI worker into Loro document.
+            // Must target the "codemirror" container — the single canonical text
+            // container owned by loro-codemirror's LoroSyncPlugin — or streamed
+            // tokens land in an isolated container the editor never reads.
+            if (message.chunk) {
+              const text = this.doc.getText("codemirror");
+              text.insert(text.length, message.chunk);
+              this.doc.commit();
+            }
           }
+        } catch (err) {
+          console.error("[LoroSync] Error handling server message:", err);
         }
       };
 
@@ -199,14 +190,47 @@ export class LoroSyncClient {
     }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(update);
-      this.stats.bytesSent += update.length;
-      this.stats.updatesSent += 1;
-      this.stats.lastSyncAt = new Date();
-      this.options.onStatsChange({ ...this.stats });
+      this.sendCrdtFrame(update);
     }
 
     return update;
+  }
+
+  /**
+   * Encode `bytes` as base64 and send a `crdt-sync` JSON frame to the server.
+   *
+   * Every outbound CRDT payload — both the cold-join snapshot on `onopen` and
+   * every incremental update from `exportAndSendUpdate` — must go through here
+   * so the server can route it to the correct `DocumentRoom` via `docId`.
+   * Sending raw binary frames is rejected server-side because there is no field
+   * to carry the `docId` in an unstructured byte stream.
+   */
+  private sendCrdtFrame(bytes: Uint8Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    // Safe base64 encoding for arbitrary-size Uint8Arrays.
+    // btoa(String.fromCharCode(...bytes)) uses spread which overflows the JS
+    // call stack for arrays larger than ~65 k elements. Chunking avoids this.
+    const CHUNK = 8192;
+    let b64 = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      b64 += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    b64 = btoa(b64);
+
+    const frame: SyncMessage = {
+      type: "crdt-sync",
+      docId: this.docId,
+      payload: b64,
+      senderId: this.doc.peerIdStr,
+      timestamp: Date.now(),
+    };
+
+    this.ws.send(JSON.stringify(frame));
+    this.stats.bytesSent += bytes.length;
+    this.stats.updatesSent += 1;
+    this.stats.lastSyncAt = new Date();
+    this.options.onStatsChange({ ...this.stats });
   }
 
   public sendAwareness(peer: PeerAwareness) {
@@ -214,6 +238,7 @@ export class LoroSyncClient {
 
     const message: ChronoWebSocketMessage = {
       type: "awareness-update",
+      docId: this.docId,
       peer,
       timestamp: Date.now(),
     };
@@ -228,9 +253,10 @@ export class LoroSyncClient {
     const frontierStr = JSON.stringify(frontiers);
 
     const taskId = `task-${Date.now()}`;
-    const request: AgentTaskRequest & { simulateFailure?: boolean } = {
+    const request: AgentTaskRequest & { simulateFailure?: boolean; docId: string } = {
       type: "agent-task-request",
       taskId,
+      docId: this.docId,
       prompt,
       docFrontier: frontierStr,
       simulateFailure,

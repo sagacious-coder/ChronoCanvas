@@ -14,7 +14,8 @@ import {
   errMsg,
 } from './hub.js';
 import { eventHub } from './EventHub.js';
-import { createApiHandler } from './api.js';
+import { createApiHandler, getTemporalClient } from './api.js';
+import type { AgentTaskStatus } from '@chronocanvas/shared-types';
 
 /**
  * ChronoCanvas WebSocket transport.
@@ -53,9 +54,27 @@ wss.on('connection', (socket: WebSocket, request) => {
   ws.joinedRooms = new Set<string>();
   console.log(`[+] client ${connId} connected from ${request.socket.remoteAddress}`);
 
-  ws.on('message', (data) => {
+  ws.on('message', (data, isBinary) => {
     // Outermost crash boundary: nothing a client sends may take the process down.
     try {
+      // Guard: a *true* binary frame is a protocol error — clients must send
+      // crdt-sync JSON frames (base64 payload + docId) so the server can route
+      // to the correct DocumentRoom. Raw binary carries no docId field.
+      //
+      // CRITICAL (ws v8): the `message` event always hands `data` over as a
+      // Buffer, even for text frames, so `Buffer.isBuffer(data)` is NOT a binary
+      // test — it is true for every frame. The frame opcode lives in the
+      // `isBinary` argument. The previous `Buffer.isBuffer(data)` check therefore
+      // misclassified every JSON frame as binary and dropped it, which is the
+      // real source of the "binary frame received (N bytes)" log.
+      if (isBinary) {
+        console.warn(
+          `[${connId}] protocol error: binary frame received (${(data as Buffer).length} bytes). ` +
+          `Client must send crdt-sync JSON frames, not raw Uint8Array. Frame dropped.`,
+        );
+        return;
+      }
+
       let message: unknown;
       try {
         message = JSON.parse(data.toString());
@@ -70,6 +89,7 @@ wss.on('connection', (socket: WebSocket, request) => {
       const frame = message as Record<string, unknown>;
       if (frame.type === 'crdt-sync') handleCrdtSync(ws, frame);
       else if (frame.type === 'awareness-update') handleAwareness(ws, frame);
+      else if (frame.type === 'agent-task-request') void handleAgentTaskRequest(ws, frame);
       else console.log(`[${connId}] unknown message type: ${String(frame.type)}`);
     } catch (err) {
       console.error(`[${connId}] message handler crashed: ${err instanceof Error ? err.message : String(err)}`);
@@ -187,5 +207,139 @@ function handleAwareness(ws: ClientSocket, message: Record<string, unknown>): vo
   for (const [memberId, member] of room.members) {
     if (memberId === ws.connId || member.ws === ws) continue;
     safeSend(member.ws, frame, `room:${docId}/${memberId}`);
+  }
+}
+
+// --- agent-task-request -------------------------------------------------------
+// Bridge between the browser's "Dispatch Agent" / "Test Rollback" buttons and
+// the Temporal workflow. The frame arrives over the WebSocket (sent by
+// `loroSync.ts :: dispatchAgentTask`) so the user never needs a separate fetch.
+//
+// Flow:
+//   1. Validate the frame and extract the docId.
+//   2. Reply immediately with `agent-task-status { status: 'planning' }` so the
+//      UI updates without waiting for Temporal.
+//   3. Export the current hub snapshot (real CRDT bytes, not an empty array).
+//   4. Start `agentSyncWorkflow` via the same lazy Temporal client used by the
+//      REST endpoint so we never open a second connection.
+//   5. Reply `committed` (workflow started) or `rolled-back` (Temporal error).
+//
+// Note: we only *start* the workflow here and return immediately — the agent
+// worker broadcasts the actual CRDT update via its own WebSocket connection once
+// the LLM finishes, exactly as it does when triggered via POST /api/ask-ai.
+
+const AGENT_TASK_QUEUE   = process.env.AGENT_TASK_QUEUE   ?? 'agent-queue';
+const TEMPORAL_NAMESPACE = process.env.TEMPORAL_NAMESPACE ?? 'default';
+const SYSTEM_INSTRUCTION =
+  'Read the canvas text and append a short, coherent 1-sentence continuation.';
+
+async function handleAgentTaskRequest(
+  ws: ClientSocket,
+  message: Record<string, unknown>,
+): Promise<void> {
+  const taskId = typeof message.taskId === 'string' ? message.taskId : randomUUID();
+  const simulateFailure = message.simulateFailure === true;
+
+  // docId: prefer an explicit field; fall back to the well-known default room.
+  const rawDocId = typeof message.docId === 'string' ? message.docId : 'chrono-canvas-default';
+  const docId = isValidDocId(rawDocId) ? rawDocId : 'chrono-canvas-default';
+
+  console.log(
+    `[agent-task] taskId=${taskId} docId=${docId} simulateFailure=${simulateFailure} from ${ws.connId}`,
+  );
+
+  // --- 1. Acknowledge immediately so the UI badge switches to "Planning..." ---
+  const planningStatus: AgentTaskStatus = {
+    type: 'agent-task-status',
+    taskId,
+    status: 'planning',
+  };
+  safeSend(ws, planningStatus, `agent-task/${taskId}`);
+
+  // --- 2. Export the current document snapshot from the hub -------------------
+  // `peekRoom` — do not conjure a room that was never joined.
+  const room = peekRoom(docId);
+  let stateBytes: number[] = [];
+  if (room) {
+    try {
+      const snap = room.doc.export({ mode: 'snapshot' });
+      stateBytes = Array.from(snap);
+    } catch (exportErr) {
+      console.warn(`[agent-task] snapshot export failed for ${docId}: ${errMsg(exportErr)}`);
+    }
+  }
+
+  // --- 3. Build system instruction (inject failure flag for Test Rollback) ----
+  // The worker reads SIMULATE_AGENT_CRASH from its own env, but we also embed a
+  // sentinel in the system instruction so a prompt-level crash can be tested
+  // without restarting the worker process.
+  const systemInstruction = simulateFailure
+    ? '__SIMULATE_AGENT_CRASH__ ' + SYSTEM_INSTRUCTION
+    : (typeof message.prompt === 'string' && message.prompt.trim()
+        ? message.prompt.trim()
+        : SYSTEM_INSTRUCTION);
+
+  // --- 4. Fire the Temporal workflow and relay its REAL outcome ----------------
+  // We intentionally AWAIT the workflow result rather than replying 'committed'
+  // the instant the workflow is scheduled. `workflow.start` resolving only means
+  // Temporal *accepted* the job — not that the agent committed. The agent's
+  // actual CRDT write (success path) or rollback (failure path) is decided inside
+  // `generateAndInjectResponse`, and `agentSyncWorkflow` re-throws on rollback
+  // (workflows.ts). `handle.result()` is therefore the only place the server can
+  // learn the true terminal status to forward to the browser badge — previously
+  // the server reported 'committed' optimistically on start and the real
+  // rollback outcome was never relayed, so the badge could never show it.
+  const workflowId = `agent-task-${docId}-${taskId}`;
+  try {
+    const client = await getTemporalClient();
+    const handle = await client.workflow.start('agentSyncWorkflow', {
+      taskQueue: AGENT_TASK_QUEUE,
+      workflowId,
+      args: [{ docId, stateBytes, systemInstruction }],
+    });
+
+    console.log(`[agent-task] workflow started workflowId=${workflowId}`);
+
+    // The worker is now running: move the badge to 'generating' while the
+    // two-phase workflow (checkpoint → LLM → broadcast) settles.
+    const generatingStatus: AgentTaskStatus = {
+      type: 'agent-task-status',
+      taskId,
+      status: 'generating',
+    };
+    safeSend(ws, generatingStatus, `agent-task/${taskId}`);
+
+    // Block on the real outcome. Resolves with the generated text on the success
+    // path (the browser already received the CRDT delta over its own socket, so
+    // this is purely the status confirmation); rejects when the activity rolled
+    // back (SIMULATED_AGENT_CRASH, LLM failure, empty response, …) because
+    // `agentSyncWorkflow` re-throws after the activity performs its rollback.
+    await handle.result();
+
+    console.log(`[agent-task] workflow committed workflowId=${workflowId}`);
+
+    const committedStatus: AgentTaskStatus = {
+      type: 'agent-task-status',
+      taskId,
+      status: 'committed',
+    };
+    safeSend(ws, committedStatus, `agent-task/${taskId}`);
+  } catch (err) {
+    // Reached when the workflow failed to start OR when it ran and rolled back.
+    // In both cases the authoritative document is already healed (the activity's
+    // rollback broadcast, or — for a pre-write crash — nothing was ever written),
+    // so the correct client signal is 'rolled-back' with the diagnostic trace
+    // that drives the UI's error banner.
+    const msg = errMsg(err);
+    console.error(`[agent-task] workflow ${workflowId} rolled back / failed: ${msg}`);
+
+    const rolledBackStatus: AgentTaskStatus = {
+      type: 'agent-task-status',
+      taskId,
+      status: 'rolled-back',
+      rollbackTriggered: true,
+      errorTrace: msg,
+    };
+    safeSend(ws, rolledBackStatus, `agent-task/${taskId}`);
   }
 }
