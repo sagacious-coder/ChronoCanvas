@@ -2,61 +2,115 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    background-color: #FDFBF7;
+    color: #1F2328;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* CodeMirror 6 Apple Creamy Theme */
 .cm-editor {
   height: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 14px;
+  font-size: 13.5px;
+  background-color: #FAF8F5;
+  color: #1F2328;
 }
 
 .cm-scroller {
   overflow: auto;
 }
 
+.cm-gutters {
+  background-color: #F4EFE6 !important;
+  color: #8C8273 !important;
+  border-right: 1px solid #E6E2D8 !important;
+}
+
+.cm-activeLine {
+  background-color: #F1EBE0 !important;
+}
+
+.cm-activeLineGutter {
+  background-color: #E8E1D2 !important;
+  color: #3A352D !important;
+}
+
+.cm-selectionBackground, ::selection {
+  background-color: #DDE5F5 !important;
+}
+
+/* Collaborative Multi-Cursor Presence */
 .cm-loro-cursor {
   position: absolute;
   border-left: 2px solid;
-  height: 1.2em;
+  height: 1.25em;
   pointer-events: none;
   z-index: 10;
 }
 
 .cm-loro-cursor-label {
   position: absolute;
-  top: -1.4em;
+  top: -1.5em;
   left: -2px;
   font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 2px;
+  padding: 1px 5px;
+  border-radius: 4px;
   color: #ffffff;
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
 }
 
 .loro-user-za {
-  border-color: #3b82f6;
-  background-color: #3b82f6;
+  border-color: #2563eb;
+  background-color: #2563eb;
 }
 
 .loro-user-mu {
-  border-color: #10b981;
-  background-color: #10b981;
+  border-color: #059669;
+  background-color: #059669;
 }
 
 .loro-user-agent {
-  border-color: #a855f7;
-  background-color: #a855f7;
+  border-color: #7c3aed;
+  background-color: #7c3aed;
 }
 
 .loro-selection-za {
-  background-color: rgba(59, 130, 246, 0.2);
+  background-color: rgba(37, 99, 235, 0.15);
 }
 
 .loro-selection-mu {
-  background-color: rgba(16, 185, 129, 0.2);
+  background-color: rgba(5, 150, 105, 0.15);
 }
 
 .loro-selection-agent {
-  background-color: rgba(168, 85, 247, 0.2);
+  background-color: rgba(124, 58, 237, 0.15);
+}
+
+/* Positive Revert Success Pulse Animation (Positive Green) */
+@keyframes revert-success-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(19, 115, 51, 0.6);
+    border-color: #137333;
+  }
+  35% {
+    box-shadow: 0 0 24px 6px rgba(19, 115, 51, 0.25);
+    border-color: #137333;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(19, 115, 51, 0);
+    border-color: #E6E2D8;
+  }
+}
+
+.revert-pulse-active {
+  animation: revert-success-pulse 1.8s ease-out;
 }
