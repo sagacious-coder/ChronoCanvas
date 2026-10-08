@@ -4,7 +4,7 @@ import { CodeEditor, UserPresence } from "./components/CodeEditor";
 import { AgentControlPanel } from "./components/AgentControlPanel";
 import { CheckpointTimeline, DocumentCheckpoint } from "./components/CheckpointTimeline";
 import { useLoroSync } from "./hooks/useLoroSync";
-import { CursorPosition } from "@chronocanvas/shared-types";
+import { CursorPosition } from "./types/shared";
 
 export const App: React.FC = () => {
   // Stable LoroDoc and Awareness instances across re-renders
@@ -39,7 +39,7 @@ export const App: React.FC = () => {
     broadcastAwareness,
     getFrontierString,
     reconnect,
-  } = useLoroSync(doc, "ws://localhost:3001");
+  } = useLoroSync(doc, "ws://localhost:3001", "chrono-canvas-default", peerId);
 
   const [currentFrontier, setCurrentFrontier] = useState<string>("root-0");
   const [checkpoints, setCheckpoints] = useState<DocumentCheckpoint[]>([

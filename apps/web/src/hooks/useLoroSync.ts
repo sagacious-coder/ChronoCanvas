@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
-import { AgentTaskStatus, PeerAwareness } from "@chronocanvas/shared-types";
+import { AgentTaskStatus, PeerAwareness } from "../types/shared";
 
-export function useLoroSync(doc: LoroDoc, serverUrl = "ws://localhost:3001") {
+export function useLoroSync(
+  doc: LoroDoc,
+  serverUrl = "ws://localhost:3001",
+  docId = "chrono-canvas-default",
+  peerId?: string
+) {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [stats, setStats] = useState<SyncStats>({
     bytesSent: 0,
@@ -28,6 +33,8 @@ export function useLoroSync(doc: LoroDoc, serverUrl = "ws://localhost:3001") {
   useEffect(() => {
     const client = new LoroSyncClient(doc, {
       url: serverUrl,
+      docId,
+      peerId,
       onStatusChange: setStatus,
       onStatsChange: setStats,
       onAgentStatusChange: setAgentStatus,
@@ -41,7 +48,7 @@ export function useLoroSync(doc: LoroDoc, serverUrl = "ws://localhost:3001") {
       client.destroy();
       clientRef.current = null;
     };
-  }, [doc, serverUrl, handleRemoteAwareness]);
+  }, [doc, serverUrl, docId, peerId, handleRemoteAwareness]);
 
   const dispatchAgentTask = useCallback((prompt: string, simulateFailure = false) => {
     clientRef.current?.dispatchAgentTask(prompt, simulateFailure);
