@@ -1,10 +1,9 @@
 /**
- * ChronoCanvas — `/api/ask-ai` HTTP endpoint.
+ * ChronoCanvas — HTTP API endpoints.
  *
- * This module creates a minimal `node:http` server that handles a single POST
- * route alongside the existing WebSocket server.  It deliberately avoids
- * Express to keep the server dependency-light: the routing logic is four lines
- * and the rest is JSON body parsing + Temporal client setup.
+ * This module creates a minimal `node:http` server that handles REST routes
+ * alongside the existing WebSocket server.  It deliberately avoids Express
+ * to keep the server dependency-light.
  *
  * ## Why a separate HTTP server?
  *
@@ -13,23 +12,30 @@
  * `WebSocketServer` (in `index.ts`) and this module's request handler, so a
  * single port (default 3001) serves both WS upgrades and REST calls.
  *
- * ## Request / Response
+ * ## Endpoints
  *
  *   POST /api/ask-ai
  *   Content-Type: application/json
  *   Body: { docId: string; stateBytes: number[] }   // AskAiRequest
+ *   → 200: { workflowId: string; submittedAt: string }
+ *   The frontend sends its own snapshot bytes; the server decodes them to text
+ *   for the `currentDocumentState` workflow arg.
  *
- *   200 OK
- *   { workflowId: string; submittedAt: string }     // AskAiResponse
+ *   POST /api/agent/dispatch
+ *   Content-Type: application/json
+ *   Body: { docId: string; instruction?: string }
+ *   → 200: { workflowId: string; submittedAt: string }
+ *   Authoritative route: the server extracts the current Loro room text from
+ *   the live hub (the ground truth), not from a client snapshot.
  *
- * The handler fires-and-forgets the Temporal workflow — it returns the
- * workflowId immediately and does NOT await the result.  The agent worker
- * will push the CRDT update back through the existing WebSocket fan-out once
- * the LLM responds, so the frontend needs no polling.
+ * Both handlers fire-and-forget the Temporal workflow — the agent worker
+ * broadcasts the CRDT update back through the WebSocket fan-out once the
+ * LLM responds, so the frontend needs no polling.
  */
 
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Connection, Client } from '@temporalio/client';
+import { LoroDoc } from 'loro-crdt';
 import type { AskAiRequest, AskAiResponse } from '@chronocanvas/shared-types';
 
 // ---- Config -----------------------------------------------------------------
@@ -38,9 +44,13 @@ const TEMPORAL_ADDRESS   = process.env.TEMPORAL_ADDRESS   ?? 'localhost:7233';
 const TEMPORAL_NAMESPACE = process.env.TEMPORAL_NAMESPACE ?? 'default';
 const AGENT_TASK_QUEUE   = process.env.AGENT_TASK_QUEUE   ?? 'agent-queue';
 
-/** System instruction the server sends to every agentSyncWorkflow invocation. */
-const SYSTEM_INSTRUCTION =
-  'Read the canvas text and append a short, coherent 1-sentence continuation.';
+/** Default instruction when none is specified by the caller. */
+const DEFAULT_SYSTEM_INSTRUCTION =
+  'Read the canvas and suggest a coherent continuation or improvement.';
+
+// Deferred require so this module can be imported without the hub being fully
+// initialised — it is called at request time, not import time.
+import { peekRoom, errMsg } from './hub.js';
 
 // ---- Temporal client (lazy singleton) ---------------------------------------
 
@@ -106,6 +116,23 @@ async function handleAskAi(req: IncomingMessage, res: ServerResponse): Promise<v
 
   const { docId, stateBytes } = body as AskAiRequest;
 
+  // --- Extract current document text from the client's snapshot bytes ---------
+  // The client sends its own Loro snapshot.  We decode it into a headless doc
+  // to pull the plain text for the `currentDocumentState` workflow arg.  The
+  // hub's authoritative doc would be preferable, but /api/ask-ai is a pull
+  // endpoint and the client snapshot is already there — use it.
+  let currentDocumentState = '';
+  if (stateBytes.length > 0) {
+    try {
+      const tempDoc = new LoroDoc();
+      tempDoc.import(new Uint8Array(stateBytes));
+      currentDocumentState = tempDoc.getText('codemirror').toString();
+    } catch (decodeErr) {
+      console.warn(`[api/ask-ai] could not decode stateBytes for docId=${docId}: ${errMsg(decodeErr)}`);
+      // Continue without text — the LLM will operate on an empty canvas context.
+    }
+  }
+
   let client: Client;
   try {
     client = await getTemporalClient();
@@ -125,7 +152,12 @@ async function handleAskAi(req: IncomingMessage, res: ServerResponse): Promise<v
     await client.workflow.start('agentSyncWorkflow', {
       taskQueue: AGENT_TASK_QUEUE,
       workflowId,
-      args: [{ docId, stateBytes, systemInstruction: SYSTEM_INSTRUCTION }],
+      args: [{
+        docId,
+        stateBytes,
+        currentDocumentState,
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
+      }],
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -143,15 +175,106 @@ async function handleAskAi(req: IncomingMessage, res: ServerResponse): Promise<v
   sendJson(res, 200, responseBody);
 }
 
+// ---- /api/agent/dispatch handler --------------------------------------------
+
+/**
+ * Authoritative dispatch endpoint.
+ *
+ * Unlike `/api/ask-ai` (which relies on the client's own snapshot bytes),
+ * this route pulls the **current Loro document text directly from the hub**
+ * — the server's authoritative source of truth.  This guarantees the LLM
+ * always sees the latest committed state, not a potentially stale client
+ * snapshot from before a concurrent edit landed.
+ *
+ * Request body: `{ docId: string; instruction?: string }`
+ * Response:     `{ workflowId: string; submittedAt: string }`
+ */
+async function handleAgentDispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    sendJson(res, 400, { error: 'Could not parse request body as JSON.' });
+    return;
+  }
+
+  if (!body || typeof body !== 'object' || typeof (body as Record<string, unknown>).docId !== 'string') {
+    sendJson(res, 400, { error: 'Body must be { docId: string; instruction?: string }.' });
+    return;
+  }
+
+  const { docId, instruction } = body as { docId: string; instruction?: string };
+  const systemInstruction =
+    typeof instruction === 'string' && instruction.trim()
+      ? instruction.trim()
+      : DEFAULT_SYSTEM_INSTRUCTION;
+
+  // --- Pull authoritative document state from the hub -------------------------
+  // `peekRoom` — never conjure a room that was never joined.  If no room exists
+  // for this docId the document is blank and we proceed with an empty string.
+  let stateBytes: number[] = [];
+  let currentDocumentState = '';
+  const room = peekRoom(docId);
+  if (room) {
+    try {
+      const snap = room.doc.export({ mode: 'snapshot' });
+      stateBytes = Array.from(snap);
+      // Extract the canonical text container that loro-codemirror writes to.
+      currentDocumentState = room.doc.getText('codemirror').toString();
+    } catch (exportErr) {
+      console.warn(
+        `[api/agent/dispatch] snapshot export failed for docId=${docId}: ${errMsg(exportErr)}`,
+      );
+      // Fall through with empty bytes/text — the LLM will operate on a blank canvas.
+    }
+  } else {
+    console.log(`[api/agent/dispatch] no active room for docId=${docId} — treating canvas as empty`);
+  }
+
+  let client: Client;
+  try {
+    client = await getTemporalClient();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[api/agent/dispatch] Temporal connection failed: ${msg}`);
+    sendJson(res, 503, { error: `Could not connect to Temporal: ${msg}` });
+    return;
+  }
+
+  const workflowId = `agent-dispatch-${docId}-${Date.now()}`;
+
+  try {
+    await client.workflow.start('agentSyncWorkflow', {
+      taskQueue: AGENT_TASK_QUEUE,
+      workflowId,
+      args: [{ docId, stateBytes, currentDocumentState, systemInstruction }],
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[api/agent/dispatch] Failed to start workflow: ${msg}`);
+    sendJson(res, 500, { error: `Failed to start agent workflow: ${msg}` });
+    return;
+  }
+
+  console.log(
+    `[api/agent/dispatch] started workflowId=${workflowId} for docId=${docId} ` +
+    `currentDocumentState.length=${currentDocumentState.length}`,
+  );
+
+  const responseBody: AskAiResponse = { workflowId, submittedAt: new Date().toISOString() };
+  sendJson(res, 200, responseBody);
+}
+
 // ---- Main request dispatcher ------------------------------------------------
 
 /**
  * Attach this handler to the shared `http.Server` in `index.ts`.
  *
  * Routes handled:
- *   OPTIONS *              — CORS preflight (browser fetch needs this)
- *   POST /api/ask-ai       — trigger agentSyncWorkflow
- *   anything else          — 404
+ *   OPTIONS *                   — CORS preflight (browser fetch needs this)
+ *   POST /api/ask-ai            — trigger agentSyncWorkflow (client supplies snapshot)
+ *   POST /api/agent/dispatch    — trigger agentSyncWorkflow (server reads hub state)
+ *   anything else               — 404
  *
  * WebSocket upgrade requests never reach this handler: the `ws` library
  * intercepts them before the `request` event fires.
@@ -174,6 +297,11 @@ export function createApiHandler() {
 
     if (req.method === 'POST' && req.url === '/api/ask-ai') {
       await handleAskAi(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/agent/dispatch') {
+      await handleAgentDispatch(req, res);
       return;
     }
 

@@ -45,6 +45,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 ChronoCanvas server running on port ${PORT}`);
   console.log(`   WS  → ws://localhost:${PORT}`);
   console.log(`   API → http://localhost:${PORT}/api/ask-ai`);
+  console.log(`   API → http://localhost:${PORT}/api/agent/dispatch`);
 });
 
 wss.on('connection', (socket: WebSocket, request) => {
@@ -260,10 +261,14 @@ async function handleAgentTaskRequest(
   // `peekRoom` — do not conjure a room that was never joined.
   const room = peekRoom(docId);
   let stateBytes: number[] = [];
+  let currentDocumentState = '';
   if (room) {
     try {
       const snap = room.doc.export({ mode: 'snapshot' });
       stateBytes = Array.from(snap);
+      // Extract the canonical plain-text representation from the hub's
+      // authoritative LoroDoc — the same container loro-codemirror writes to.
+      currentDocumentState = room.doc.getText('codemirror').toString();
     } catch (exportErr) {
       console.warn(`[agent-task] snapshot export failed for ${docId}: ${errMsg(exportErr)}`);
     }
@@ -295,7 +300,7 @@ async function handleAgentTaskRequest(
     const handle = await client.workflow.start('agentSyncWorkflow', {
       taskQueue: AGENT_TASK_QUEUE,
       workflowId,
-      args: [{ docId, stateBytes, systemInstruction }],
+      args: [{ docId, stateBytes, currentDocumentState, systemInstruction }],
     });
 
     console.log(`[agent-task] workflow started workflowId=${workflowId}`);

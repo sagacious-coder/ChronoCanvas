@@ -1,5 +1,5 @@
 /**
- * ChronoCanvas agent-worker — Temporal Activities (Day 7: Checkpoint Rollback).
+ * ChronoCanvas agent-worker — Temporal Activities (Stage 3: Live LLM Integration).
  *
  * Activities run in a normal Node.js environment (no Temporal sandbox), so they
  * have full access to the file system, network, and native modules — including
@@ -7,6 +7,10 @@
  *
  * Activity surface:
  *   - `captureCheckpoint`         — read Loro frontier, return JSON checkpoint.
+ *   - `generateAgentMutation`     — call the LLM with the current document state
+ *                                   and the user's instruction; return a
+ *                                   structured {@link AgentMutation} JSON object
+ *                                   describing the exact edit to make.
  *   - `generateAndInjectResponse` — call the LLM via OpenRouter, append the
  *                                   response to the Loro canvas, broadcast the
  *                                   binary update through the BackendSocket.
@@ -16,23 +20,21 @@
  *                                   broadcasts the reverted state, then
  *                                   re-throws so Temporal marks the run failed.
  *
- * Environment variables consumed here:
- *   - `OPENROUTER_API_KEY`    — required for `generateAndInjectResponse`.
+ * Environment variables consumed here (all loaded via `llm.ts` / dotenv):
+ *   - `OPENROUTER_API_KEY`    — required for any LLM activity.
  *   - `OPENROUTER_BASE_URL`   — optional override (default: https://openrouter.ai/api/v1).
  *   - `OPENROUTER_MODEL`      — optional model override (default: openrouter/auto).
  *   - `CHRONO_WORKER_ID`      — stable worker id stamped on the AgentSyncEnvelope.
- *   - `SIMULATE_AGENT_CRASH`  — set to "true" to trigger a test crash inside
- *                               `generateAndInjectResponse` immediately before
- *                               the CRDT write.  Exercises the rollback path for
- *                               Milestone 2 verification.  Remove / unset in
- *                               production.
  */
 
 import { Context } from '@temporalio/activity';
 import { LoroDoc } from 'loro-crdt';
-import OpenAI from 'openai';
 import type { LoroCheckpoint, FrontierEntry, AgentSyncEnvelope } from './types';
 import { getBackendSocket } from './connection';
+import { getLlmClient, getLlmModel } from './llm';
+// NOTE: getLlmClient / getLlmModel are used exclusively by generateAgentMutation
+// (Phase 2).  generateAndInjectResponse (Phase 3) applies the pre-computed
+// AgentMutation directly to Loro without a second LLM round-trip.
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -109,66 +111,169 @@ export async function captureCheckpoint(
 
 // ---- LLM helpers ------------------------------------------------------------
 
-/**
- * Lazily initialised OpenAI client pointed at OpenRouter.
- * Constructed on first call so the worker process starts even when the env var
- * is not set — the activity will throw with a clear message when it is missing.
- */
-let _openai: OpenAI | null = null;
-
-function getOpenAIClient(): OpenAI {
-  if (!_openai) {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        '[generateAndInjectResponse] OPENROUTER_API_KEY environment variable is not set.',
-      );
-    }
-    _openai = new OpenAI({
-      baseURL: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
-      apiKey,
-    });
-  }
-  return _openai;
-}
-
 /** Base64-encode a Uint8Array for the AgentSyncEnvelope payload field. */
 const toB64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
+
+// ---- Structured mutation type -----------------------------------------------
+
+/**
+ * The JSON schema the LLM must produce for {@link generateAgentMutation}.
+ *
+ * The agent evaluates the `currentDocumentState`, decides *where* to edit, and
+ * returns this shape — never free-form prose, never markdown fences.
+ *
+ * @field operation  - `'insert'` adds text at position; `'replace'` removes a
+ *                    range and replaces it; `'append'` adds text at the end.
+ * @field position   - 0-based character offset (required for insert/replace).
+ * @field deleteCount - number of characters to remove before inserting
+ *                    `content` (required when operation is `'replace'`).
+ * @field content    - the exact text to write; must NOT contain markdown fences,
+ *                    triple-backticks, or commentary.
+ * @field rationale  - one sentence explaining why this edit was chosen.
+ */
+export interface AgentMutation {
+  operation: 'insert' | 'replace' | 'append';
+  position?: number;
+  deleteCount?: number;
+  content: string;
+  rationale: string;
+}
+
+// ---- generateAgentMutation --------------------------------------------------
+
+/**
+ * Temporal activity — call the LLM with the user's instruction and the full
+ * current document state; return a structured {@link AgentMutation} JSON object.
+ *
+ * **Prompt discipline**: the system prompt instructs the model to act as a
+ * *precise code editor*, evaluate the document state, determine the minimal
+ * edit needed, and output ONLY a raw JSON object matching the AgentMutation
+ * schema — no markdown, no commentary, no triple-backtick fences.
+ *
+ * This activity is intentionally decoupled from CRDT writes so it can be
+ * retried independently (the Temporal retry policy on the proxy that calls it
+ * applies here) without risking a double-write to Loro.
+ *
+ * @param instruction         - The user's natural-language edit request
+ *                              (e.g. "Implement binary search").
+ * @param currentDocumentState - Full text of the canvas as a plain string.
+ * @returns A JSON string that deserialises to {@link AgentMutation}.
+ *
+ * @throws When the LLM returns empty output or invalid JSON — the caller
+ *         (the workflow) should decide whether to retry or roll back.
+ */
+export async function generateAgentMutation(
+  instruction: string,
+  currentDocumentState: string,
+): Promise<string> {
+  const ctx = Context.current();
+  ctx.heartbeat('generate-mutation:start');
+
+  const openai = getLlmClient();
+  const model  = getLlmModel();
+
+  const systemPrompt = `You are an expert autonomous code editor connected directly to a Loro CRDT document. 
+Your task is to modify the provided codebase based on the user's instruction.
+
+CRITICAL RULES:
+1. Do NOT append new functions if an empty stub already exists. You MUST use the "replace" operation to fill in the existing stub.
+2. Output ONLY valid, executable code. Do NOT include markdown formatting, explanations, or module.exports unless explicitly requested.
+3. Your output must strictly match this JSON schema:
+{
+  "operation": "insert" | "replace" | "append",
+  "position": number, // Starting character index
+  "deleteCount": number, // Number of characters to delete (for replace)
+  "content": "the actual code string to inject"
+}`;
+
+  const userMessage =
+    currentDocumentState.length > 0
+      ? `Instruction: ${instruction}\n\nCurrent document state:\n\`\`\`\n${currentDocumentState}\n\`\`\``
+      : `Instruction: ${instruction}\n\n(The canvas is currently empty.)`;
+
+  ctx.heartbeat('generate-mutation:calling-llm');
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userMessage  },
+    ],
+    // Request JSON mode if the model supports it (OpenRouter passes this through).
+    response_format: { type: 'json_object' },
+    temperature: 0.2,  // Low temperature = deterministic, precise edits.
+  });
+
+  ctx.heartbeat('generate-mutation:parsing');
+
+  const raw = completion.choices[0]?.message?.content ?? '';
+  if (!raw.trim()) {
+    throw new Error('[generateAgentMutation] LLM returned an empty response.');
+  }
+
+  // Validate the response is well-formed JSON with the required fields.
+  let mutation: AgentMutation;
+  try {
+    mutation = JSON.parse(raw) as AgentMutation;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `[generateAgentMutation] LLM response is not valid JSON: ${msg}\n\nRaw response:\n${raw}`,
+    );
+  }
+
+  if (!mutation.operation || !mutation.content || !mutation.rationale) {
+    throw new Error(
+      `[generateAgentMutation] LLM response is missing required fields (operation, content, rationale).\n\nParsed: ${JSON.stringify(mutation)}`,
+    );
+  }
+
+  console.log(
+    `[generateAgentMutation] op="${mutation.operation}" ` +
+    `pos=${mutation.position ?? 'n/a'} ` +
+    `content.length=${mutation.content.length}`,
+  );
+
+  return JSON.stringify(mutation);
+}
 
 // ---- Activities (continued) -------------------------------------------------
 
 /**
- * LLM generation + CRDT injection activity — with checkpoint rollback.
+ * CRDT injection activity — applies a pre-generated {@link AgentMutation} to
+ * the Loro canvas and broadcasts the incremental update.
  *
- * Steps:
- *   1. Deserialise the Loro state into a headless LoroDoc.
- *   2. Deserialise `checkpointJson` into a {@link LoroCheckpoint} and decode
- *      the saved frontiers into Loro's native `{ peer: bigint; counter }[]`
- *      format.  These are the coordinates we roll back to on failure.
- *   3. Read the current canvas text from the `'codemirror'` container.
- *   4. **[CRASH FENCE]** If `SIMULATE_AGENT_CRASH=true`, throw immediately to
- *      exercise the rollback path without a live LLM.
- *   5. Call the LLM via OpenRouter.
- *   6. Append the LLM's response to the LoroText container.
- *   7. Export an *incremental* binary update and broadcast it to all clients.
+ * This activity is Phase 3 of the `agentSyncWorkflow`.  By the time it runs,
+ * Phase 2 (`generateAgentMutation`) has already called the LLM and returned a
+ * validated `AgentMutation` JSON string.  This activity's only job is to:
  *
- * On **any** error thrown by steps 4–7, the catch block:
- *   - Calls `doc.checkout(savedFrontiers)` to revert all agent ops in-place.
+ *   1. Deserialise the Loro state into a headless `LoroDoc`.
+ *   2. Decode the checkpoint frontiers (the rollback target).
+ *   3. Parse the `mutationJson` and apply the structured edit to the Loro
+ *      `LoroText` container using the exact `operation`/`position`/`deleteCount`
+ *      /`content` fields — **no second LLM call**.
+ *   4. Export an incremental binary update and broadcast it via the backend
+ *      WebSocket so all clients converge instantly.
+ *
+ * On **any** error thrown by steps 3–4, the catch block:
+ *   - Calls `doc.checkout(savedFrontiers)` to revert all agent ops in-place
+ *     (sub-5 ms for typical session-size documents).
  *   - Exports the rolled-back state and broadcasts it as an `AgentSyncEnvelope`
  *     so every client instantly sees the clean, pre-agent canvas.
- *   - Re-throws the original error so Temporal records the activity as failed
- *     and the workflow can handle it (or let it surface to the caller).
+ *   - Re-throws the original error so Temporal records the activity as failed.
  *
- * @param docId             - Stable document id; stamped on the envelope.
- * @param stateBytes        - Current Loro state, serialised as a number[] for
- *                            JSON transport across the Temporal activity boundary.
- * @param systemInstruction - The instruction sent as the system role to the LLM.
- * @param checkpointJson    - JSON string produced by {@link captureCheckpoint}
- *                            immediately before this activity was scheduled.
- *                            Contains the frontier we revert to on failure.
- * @returns The LLM's generated text (useful for Temporal history inspection).
+ * @param docId          - Stable document id; stamped on the envelope.
+ * @param stateBytes     - Current Loro state, serialised as a `number[]` for
+ *                         JSON transport across the Temporal activity boundary.
+ * @param mutationJson   - JSON string produced by {@link generateAgentMutation}
+ *                         (i.e. a serialised {@link AgentMutation}).
+ *                         Passed via the `systemInstruction` parameter slot
+ *                         to preserve the existing Temporal activity signature.
+ * @param checkpointJson - JSON string produced by {@link captureCheckpoint}.
+ *                         Contains the frontier we revert to on failure.
+ * @returns The inserted/replaced content string (useful for Temporal history).
  *
- * @throws Re-throws any error from the generation/mutation phase after the
+ * @throws Re-throws any error from the mutation/broadcast phase after the
  *         rollback broadcast has been sent.
  */
 export async function generateAndInjectResponse(
@@ -295,63 +400,81 @@ export async function generateAndInjectResponse(
     }
   }
 
-  // ---- 4–7. Generation, mutation, and broadcast (crash-protected) -----------
+  // ---- 4–6. Parse mutation, apply to Loro, and broadcast (crash-protected) --
   try {
-    // ---- [4] Simulated crash gate (Milestone 2 testing) ---------------------
+    // ---- [4] Parse the structured AgentMutation from Phase 2 ----------------
     //
-    // Toggle by setting SIMULATE_AGENT_CRASH=true in the worker environment.
-    // This throw fires *after* the checkpoint frontiers have been decoded but
-    // *before* any CRDT write, so the rollback broadcast will produce a no-op
-    // delta (empty update) — the correct behaviour for a pre-write crash.
-    if (process.env.SIMULATE_AGENT_CRASH === 'true') {
-      throw new Error('SIMULATED_AGENT_CRASH');
+    // `systemInstruction` carries the raw JSON string returned by
+    // `generateAgentMutation` (Phase 2).  We validate it here rather than
+    // trusting that Phase 2's schema check was sufficient — defensive parsing
+    // ensures that a future change to the activity signature cannot silently
+    // inject garbage into the Loro document.
+    ctx.heartbeat('parsing-mutation');
+
+    let mutation: AgentMutation;
+    try {
+      mutation = JSON.parse(systemInstruction) as AgentMutation;
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      throw new Error(
+        `[generateAndInjectResponse] mutationJson is not valid JSON for doc "${docId}": ${msg}` +
+        `\n\nRaw mutationJson:\n${systemInstruction}`,
+      );
     }
 
-    // ---- [5] Call the LLM ---------------------------------------------------
-    ctx.heartbeat('calling-llm');
-
-    const model = process.env.OPENROUTER_MODEL ?? 'openrouter/auto';
-    const openai = getOpenAIClient();
-
-    const completion = await openai.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: systemInstruction,
-        },
-        {
-          role: 'user',
-          // The canvas text is the LLM's sole context.  An empty canvas is
-          // signalled explicitly so the model does not hallucinate prior content.
-          content: currentText.length > 0
-            ? `Current canvas text:\n\n${currentText}`
-            : '(The canvas is currently empty.)',
-        },
-      ],
-    });
-
-    const generated = completion.choices[0]?.message?.content ?? '';
-
-    if (!generated) {
+    if (!mutation.operation || !mutation.content) {
       throw new Error(
-        `[generateAndInjectResponse] LLM returned an empty response for doc "${docId}"`,
+        `[generateAndInjectResponse] mutationJson is missing required fields ` +
+        `(operation, content) for doc "${docId}". Parsed: ${JSON.stringify(mutation)}`,
       );
     }
 
     console.log(
-      `[generateAndInjectResponse] doc="${docId}" LLM generated ${generated.length} chars`,
+      `[generateAndInjectResponse] doc="${docId}" applying op="${mutation.operation}" ` +
+      `pos=${mutation.position ?? 'n/a'} ` +
+      `deleteCount=${mutation.deleteCount ?? 'n/a'} ` +
+      `content.length=${mutation.content.length} ` +
+      `rationale="${mutation.rationale}"`,
     );
 
-    // ---- [6] Append to Loro -------------------------------------------------
+    // ---- [5] Apply the structured mutation to the Loro LoroText -------------
     ctx.heartbeat('writing-to-loro');
 
-    // Append a newline separator when the canvas already has content.
-    const insertion = currentText.length > 0 ? `\n${generated}` : generated;
-    const insertPos = textContainer.length;
-    textContainer.insert(insertPos, insertion);
+    const docLength = textContainer.length;
 
-    // ---- [7] Export incremental update + broadcast -------------------------
+    switch (mutation.operation) {
+      case 'insert': {
+        // Position defaults to end-of-document if omitted, matching 'append'
+        // semantics as a safe fallback.
+        const pos = Math.min(mutation.position ?? docLength, docLength);
+        textContainer.insert(pos, mutation.content);
+        break;
+      }
+
+      case 'replace': {
+        const pos = Math.min(mutation.position ?? 0, docLength);
+        const deleteCount = Math.min(
+          mutation.deleteCount ?? 0,
+          docLength - pos,  // clamp so we never delete past the end
+        );
+        if (deleteCount > 0) {
+          textContainer.delete(pos, deleteCount);
+        }
+        textContainer.insert(pos, mutation.content);
+        break;
+      }
+
+      case 'append':
+      default: {
+        // Append a newline separator when the canvas already has content so
+        // the agent's addition is visually distinct.
+        const prefix = currentText.length > 0 ? '\n' : '';
+        textContainer.insert(docLength, prefix + mutation.content);
+        break;
+      }
+    }
+
+    // ---- [6] Export incremental update + broadcast -------------------------
     ctx.heartbeat('broadcasting-update');
 
     const updateBytes = doc.export({ mode: 'update', from: versionBefore });
@@ -373,12 +496,12 @@ export async function generateAndInjectResponse(
       `[generateAndInjectResponse] doc="${docId}" update broadcast (${updateBytes.length} bytes)`,
     );
 
-    return generated;
+    return mutation.content;
 
   } catch (err) {
     // ---- Rollback path -------------------------------------------------------
     //
-    // Any error thrown by steps 4–7 lands here.  We attempt the checkout +
+    // Any error thrown by steps 4–6 lands here.  We attempt the checkout +
     // broadcast before re-throwing so Temporal sees a proper activity failure
     // (not a silent hang) and so clients are immediately healed.
     await broadcastRollback(err);
