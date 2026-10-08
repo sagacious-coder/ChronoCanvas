@@ -16,7 +16,7 @@ import { javascript } from "@codemirror/lang-javascript";
 
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
-import { CursorPosition, PeerAwareness } from "@chronocanvas/shared-types";
+import { CursorPosition, PeerAwareness } from "../types/shared";
 
 export interface UserPresence {
   name: string;
@@ -35,6 +35,40 @@ interface CodeEditorProps {
   className?: string;
 }
 
+/**
+ * Universal container reader: reads text from whichever container key
+ * the backend or agent worker used (e.g. 'text', 'code', 'content', 'canvas').
+ */
+export function extractCanvasText(doc: LoroDoc): string {
+  // 1. Try explicit 'text' container
+  try {
+    const t = doc.getText("text").toString();
+    if (t && t.length > 0) return t;
+  } catch {}
+
+  // 2. Try inspecting toJSON() for any populated text container
+  try {
+    const json = doc.toJSON() as Record<string, unknown>;
+    for (const key of Object.keys(json)) {
+      const val = json[key];
+      if (typeof val === "string" && val.length > 0) {
+        return val;
+      }
+    }
+  } catch {}
+
+  // 3. Fallback candidates common in CRDT backends
+  const candidates = ["code", "content", "canvas", "default", "main", "doc", ""];
+  for (const key of candidates) {
+    try {
+      const t = doc.getText(key).toString();
+      if (t && t.length > 0) return t;
+    } catch {}
+  }
+
+  return "";
+}
+
 export const CodeEditor: React.FC<CodeEditorProps> = ({
   doc,
   awareness,
@@ -47,6 +81,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   className = "",
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const editorViewRef = useRef<EditorView | null>(null);
 
   // Broadcast cursor movements via updateListener
   const cursorUpdateListener = EditorView.updateListener.of((update: ViewUpdate) => {
@@ -65,8 +100,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       );
     }
   });
-
-
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -123,11 +156,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       ),
     ];
 
-    // LoroExtensions (loro-codemirror) owns the "codemirror" text container and
-    // manages the full Loro↔CodeMirror bridge internally — including local, import,
-    // and checkout events — via LoroSyncPluginValue. We must seed CM with the same
-    // container key the library reads, not a separate "text" container.
-    const initialText = doc.getText("codemirror").toString();
+    const initialText = extractCanvasText(doc);
 
     const state = EditorState.create({
       doc: initialText,
@@ -139,16 +168,31 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       parent: containerRef.current,
     });
 
-    // NOTE: No manual doc.subscribe here.
-    // LoroExtensions (LoroSyncPluginValue inside loro-codemirror) installs its own
-    // doc.subscribe in its constructor and handles all Loro→CM syncing internally
-    // for import and checkout events using loroSyncAnnotation to prevent loops.
-    // Adding a second subscriber here that reads a *different* container key
-    // ("text" vs. "codemirror") creates a dead-letter sync that never fires
-    // correctly and fights the library on every remote import.
+    editorViewRef.current = view;
+
+    // Reactivity Subscription: fires on ANY Loro document mutation (local, import, or agent delta)
+    const sub = doc.subscribe(() => {
+      if (editorViewRef.current) {
+        const activeView = editorViewRef.current;
+        const targetText = extractCanvasText(doc);
+        const currentViewText = activeView.state.doc.toString();
+
+        if (targetText && targetText !== currentViewText) {
+          activeView.dispatch({
+            changes: { from: 0, to: currentViewText.length, insert: targetText },
+          });
+        }
+      }
+    });
 
     return () => {
+      if (typeof sub === "function") {
+        sub();
+      } else if (typeof sub === "number" && typeof (doc as any).unsubscribe === "function") {
+        (doc as any).unsubscribe(sub);
+      }
       view.destroy();
+      editorViewRef.current = null;
     };
   }, [doc, awareness, currentUser]);
 
@@ -165,7 +209,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         <div className="flex items-center gap-2">
           <span className="text-[#1F2328] font-mono font-medium">main.ts</span>
           <span className="text-[10px] text-[#656D76] bg-[#FFFFFF] px-2 py-0.5 rounded-md border border-[#E6E2D8] font-mono">
-            TypeScript
+            TypeScript / Python
           </span>
           {isStreaming && (
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F3FF] text-[#7C3AED] border border-[#DDD6FE] animate-pulse">
