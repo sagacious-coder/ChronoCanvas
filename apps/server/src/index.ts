@@ -249,15 +249,34 @@ async function handleAgentTaskRequest(
     `[agent-task] taskId=${taskId} docId=${docId} simulateFailure=${simulateFailure} from ${ws.connId}`,
   );
 
-  // --- 1. Acknowledge immediately so the UI badge switches to "Planning..." ---
+  // --- Phase 0: Acknowledge immediately → UI badge = "Planning..." -----------
   const planningStatus: AgentTaskStatus = {
     type: 'agent-task-status',
     taskId,
     status: 'planning',
   };
   safeSend(ws, planningStatus, `agent-task/${taskId}`);
+  
+  // Artificial delay so the UI can render "Planning..."
+  await new Promise(resolve => setTimeout(resolve, 800));
 
-  // --- 2. Export the current document snapshot from the hub -------------------
+  // --- Phase 1: Read document state from the hub → UI badge = "Reading canvas..." ---
+  //
+  // We emit `reading-canvas` *before* the expensive snapshot export so the badge
+  // updates immediately. The export itself is synchronous wasm and completes in
+  // < 1 ms for typical documents, but the status communicates what Phase 1 of
+  // the Temporal workflow (captureCheckpoint) will be doing on the worker side.
+  const readingCanvasStatus: AgentTaskStatus = {
+    type: 'agent-task-status',
+    taskId,
+    status: 'reading-canvas',
+  };
+  console.log("EMITTING TO WS:", "reading-canvas");
+  safeSend(ws, readingCanvasStatus, `agent-task/${taskId}`);
+  
+  // Artificial delay so the UI can render "Reading Canvas..."
+  await new Promise(resolve => setTimeout(resolve, 800));
+
   // `peekRoom` — do not conjure a room that was never joined.
   const room = peekRoom(docId);
   let stateBytes: number[] = [];
@@ -269,12 +288,17 @@ async function handleAgentTaskRequest(
       // Extract the canonical plain-text representation from the hub's
       // authoritative LoroDoc — the same container loro-codemirror writes to.
       currentDocumentState = room.doc.getText('codemirror').toString();
+      console.log(
+        `[agent-task] taskId=${taskId} canvas extracted: ${currentDocumentState.length} chars, ${currentDocumentState.split('\n').length} lines`,
+      );
     } catch (exportErr) {
       console.warn(`[agent-task] snapshot export failed for ${docId}: ${errMsg(exportErr)}`);
     }
+  } else {
+    console.log(`[agent-task] taskId=${taskId} no active room for docId=${docId} — canvas is empty`);
   }
 
-  // --- 3. Build system instruction (inject failure flag for Test Rollback) ----
+  // Build system instruction (inject failure flag for Test Rollback).
   // The worker reads SIMULATE_AGENT_CRASH from its own env, but we also embed a
   // sentinel in the system instruction so a prompt-level crash can be tested
   // without restarting the worker process.
@@ -284,16 +308,14 @@ async function handleAgentTaskRequest(
         ? message.prompt.trim()
         : SYSTEM_INSTRUCTION);
 
-  // --- 4. Fire the Temporal workflow and relay its REAL outcome ----------------
-  // We intentionally AWAIT the workflow result rather than replying 'committed'
-  // the instant the workflow is scheduled. `workflow.start` resolving only means
-  // Temporal *accepted* the job — not that the agent committed. The agent's
-  // actual CRDT write (success path) or rollback (failure path) is decided inside
-  // `generateAndInjectResponse`, and `agentSyncWorkflow` re-throws on rollback
-  // (workflows.ts). `handle.result()` is therefore the only place the server can
-  // learn the true terminal status to forward to the browser badge — previously
-  // the server reported 'committed' optimistically on start and the real
-  // rollback outcome was never relayed, so the badge could never show it.
+  // --- Phase 2 & 3: Fire Temporal workflow and relay granular phase statuses ---
+  //
+  // We AWAIT the full workflow result — `workflow.start` resolving only means
+  // Temporal *accepted* the job, not that the agent committed. We emit:
+  //   • `generating` — right after the workflow is accepted (Phase 2: LLM call)
+  //   • `injecting`  — emitted after the LLM completes, with an artificial delay
+  //                    before `committed` to ensure the UI has time to render it.
+  //   • `committed` / `rolled-back` — on the true terminal outcome from handle.result().
   const workflowId = `agent-task-${docId}-${taskId}`;
   try {
     const client = await getTemporalClient();
@@ -305,8 +327,7 @@ async function handleAgentTaskRequest(
 
     console.log(`[agent-task] workflow started workflowId=${workflowId}`);
 
-    // The worker is now running: move the badge to 'generating' while the
-    // two-phase workflow (checkpoint → LLM → broadcast) settles.
+    // Phase 2 — LLM is thinking.
     const generatingStatus: AgentTaskStatus = {
       type: 'agent-task-status',
       taskId,
@@ -315,13 +336,24 @@ async function handleAgentTaskRequest(
     safeSend(ws, generatingStatus, `agent-task/${taskId}`);
 
     // Block on the real outcome. Resolves with the generated text on the success
-    // path (the browser already received the CRDT delta over its own socket, so
-    // this is purely the status confirmation); rejects when the activity rolled
-    // back (SIMULATED_AGENT_CRASH, LLM failure, empty response, …) because
-    // `agentSyncWorkflow` re-throws after the activity performs its rollback.
+    // path; rejects when the activity rolled back because `agentSyncWorkflow`
+    // re-throws after the activity performs its rollback.
     await handle.result();
 
-    console.log(`[agent-task] workflow committed workflowId=${workflowId}`);
+    console.log(`[agent-task] workflow finished workflowId=${workflowId}`);
+
+    // Phase 3 UX — The CRDT write actually already happened in the activity,
+    // but we guarantee the UI flashes "Injecting Code..." before settling.
+    const injectingStatus: AgentTaskStatus = {
+      type: 'agent-task-status',
+      taskId,
+      status: 'injecting',
+    };
+    console.log("EMITTING TO WS:", "injecting");
+    safeSend(ws, injectingStatus, `agent-task/${taskId}`);
+    
+    // Artificial delay so the UI can render "Injecting Code..."
+    await new Promise(resolve => setTimeout(resolve, 800));
 
     const committedStatus: AgentTaskStatus = {
       type: 'agent-task-status',
@@ -337,6 +369,16 @@ async function handleAgentTaskRequest(
     // that drives the UI's error banner.
     const msg = errMsg(err);
     console.error(`[agent-task] workflow ${workflowId} rolled back / failed: ${msg}`);
+
+    // UX: Show the rollback "injecting" phase visually before showing failure
+    const injectingStatus: AgentTaskStatus = {
+      type: 'agent-task-status',
+      taskId,
+      status: 'injecting',
+    };
+    console.log("EMITTING TO WS:", "injecting");
+    safeSend(ws, injectingStatus, `agent-task/${taskId}`);
+    await new Promise(resolve => setTimeout(resolve, 800));
 
     const rolledBackStatus: AgentTaskStatus = {
       type: 'agent-task-status',

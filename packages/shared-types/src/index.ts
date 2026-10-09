@@ -82,7 +82,14 @@ export interface AgentTaskRequest {
 export interface AgentTaskStatus {
   type: 'agent-task-status';
   taskId: string;
-  status: 'planning' | 'generating' | 'sandboxed-testing' | 'committed' | 'rolled-back';
+  status:
+    | 'planning'           // Phase 0: workflow accepted by Temporal, acknowledged immediately
+    | 'reading-canvas'     // Phase 1: server extracted hub canvas state, captureCheckpoint running
+    | 'generating'         // Phase 2: generateAgentMutation running — LLM call in-flight
+    | 'injecting'          // Phase 3: generateAndInjectResponse running — CRDT write in-flight
+    | 'sandboxed-testing'  // (reserved for future sandbox testing phase)
+    | 'committed'          // Terminal success: CRDT delta broadcast, canvas updated
+    | 'rolled-back';       // Terminal failure: agent ops reverted, canvas restored to checkpoint
   preFlightTestsPassed?: boolean;
   rollbackTriggered?: boolean;
   errorTrace?: string;

@@ -172,48 +172,120 @@ export async function generateAgentMutation(
   const openai = getLlmClient();
   const model  = getLlmModel();
 
-  const systemPrompt = `You are an expert autonomous code editor connected directly to a Loro CRDT document.
-Your task is to modify the provided codebase based on the user's instruction.
+  // ---- Pre-compute structural metadata from the live canvas ------------------
+  //
+  // Metadata is embedded in the USER message (not the system prompt) because
+  // many OpenRouter models silently truncate or ignore system prompt content
+  // when `response_format: { type: 'json_object' }` is active, especially when
+  // the system prompt contains triple-backtick fenced blocks.  Moving the
+  // canvas text to the user turn guarantees the model sees it.
 
-CRITICAL INSTRUCTIONS FOR JSON OUTPUT:
-1. You MUST output ONLY a raw, valid JSON object.
-2. NO markdown formatting, NO triple backticks (\`\`\`), NO language specifiers (e.g., \`\`\`json).
-3. NO boilerplate text, NO conversational filler, NO explanations outside the "rationale" field.
-4. Your output will be parsed directly by \`JSON.parse()\`. Any deviation will cause a fatal crash.
+  const docLength = currentDocumentState.length;
+  const lineCount = currentDocumentState ? currentDocumentState.split('\n').length : 0;
 
-You must choose ONE of the following operations:
-- "insert": Adds text at the specified \`position\`. Requires \`position\` (0-based index) and \`content\`.
-- "replace": Removes \`deleteCount\` characters starting from \`position\`, then inserts \`content\`. Requires \`position\`, \`deleteCount\`, and \`content\`.
-- "append": Adds \`content\` to the end of the document. Requires \`content\`. (\`position\` and \`deleteCount\` are ignored).
+  // Detect empty function stubs so we can give the LLM exact positions for
+  // "replace" operations rather than having it guess.
+  const stubPattern = /^[ \t]*(function\s+\w+\s*\([^)]*\)\s*\{[\s\S]*?\}|const\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{[\s\S]*?\})/gm;
+  const stubs: Array<{ name: string; position: number; length: number }> = [];
+  let stubMatch: RegExpExecArray | null;
+  while ((stubMatch = stubPattern.exec(currentDocumentState)) !== null) {
+    stubs.push({
+      name: stubMatch[1]?.match(/(?:function\s+|const\s+)(\w+)/)?.[1] ?? '(anonymous)',
+      position: stubMatch.index,
+      length: stubMatch[0].length,
+    });
+  }
 
-CALCULATING POSITION AND DELETECOUNT:
-You MUST count the exact character indices based on the current document state provided below. 0 is the very first character.
-If you use "replace", ensure \`deleteCount\` exactly matches the length of the string you intend to remove.
+  const lastNewline = currentDocumentState.lastIndexOf('\n');
+  const lastLineOffset = lastNewline === -1 ? 0 : lastNewline + 1;
 
-JSON SCHEMA:
+  // ---- System prompt: schema + output rules only (keep short) -----------------
+  //
+  // IMPORTANT: Do NOT embed the canvas text here. When response_format is
+  // json_object, several hosted models (including those on OpenRouter) silently
+  // drop content in system prompts that contain backtick-fenced code blocks or
+  // exceed ~2 KB.  The canvas is delivered in the user message instead.
+  const systemPrompt = `You are an expert autonomous code editor. Your ONLY output must be a single raw JSON object — no markdown, no backticks, no prose.
+
+You will receive the CURRENT CANVAS STATE and a user INSTRUCTION in the next message.
+
+OPERATIONS:
+- "append"  → add content after the last character. No position needed.
+- "insert"  → insert content at 0-based character index "position". Requires "position".
+- "replace" → delete "deleteCount" chars from "position", then insert content. Requires "position" and "deleteCount".
+
+OUTPUT SCHEMA (no extra keys, no omitted keys):
 {
-  "operation": "insert" | "replace" | "append",
-  "position": number, // Required for insert/replace. The 0-based character index.
-  "deleteCount": number, // Required for replace. The number of characters to delete.
-  "content": "string", // The exact text/code to inject. Do not escape newlines manually unless required by JSON.
-  "rationale": "string" // A brief 1-sentence explanation of your edit.
+  "operation": "append" | "insert" | "replace",
+  "position": <number, required for insert/replace>,
+  "deleteCount": <number, required for replace>,
+  "content": "<exact code to write>",
+  "rationale": "<one sentence>"
 }
 
-Remember: Output ONLY JSON.`;
+RULES:
+1. If the canvas already has code, analyse it and make a TARGETED edit — never treat a non-empty canvas as empty.
+2. STRICT RULE: If the instruction targets a function that has an empty stub in the metadata, you MUST use "replace" with the exact position and length provided to overwrite the stub. Do NOT use "append" which would create a duplicate definition.
+3. Prefer "append" for new top-level additions ONLY when no stub exists.
+4. Match the language of the existing code. You MUST write code in the EXACT SAME LANGUAGE as the provided canvas. Do NOT write Python if the canvas is JavaScript.
+5. Output ONLY the JSON object. Anything else will cause a fatal parse error.`;
 
-  const userMessage =
-    currentDocumentState.length > 0
-      ? `Instruction: ${instruction}\n\nCurrent document state:\n\`\`\`\n${currentDocumentState}\n\`\`\``
-      : `Instruction: ${instruction}\n\n(The canvas is currently empty.)`;
+  // ---- User message: carry the full canvas context --------------------------
+  //
+  // The document state lives here so it passes through response_format:json_object
+  // reliably. The structural metadata (char count, stub positions) is pre-computed
+  // above and listed explicitly so the model can pick exact positions without
+  // mentally scanning the full text.
+  let userMessage: string;
+  if (currentDocumentState.length > 0) {
+    const stubInfo = stubs.length > 0
+      ? stubs.map(s => `  - "${s.name}": position=${s.position}, length=${s.length} (use replace to fill this stub)`).join('\n')
+      : '  - none detected';
+
+    userMessage = [
+      `INSTRUCTION: ${instruction}`,
+      '',
+      'CURRENT CANVAS STATE:',
+      `  Total characters : ${docLength}`,
+      `  Total lines      : ${lineCount}`,
+      `  Last line offset : ${lastLineOffset}`,
+      `  Empty stubs      :`,
+      stubInfo,
+      '',
+      'DOCUMENT TEXT (character positions are 0-based):',
+      '---',
+      currentDocumentState,
+      '---',
+      '',
+      'Now output the JSON edit object.',
+    ].join('\n');
+  } else {
+    userMessage = [
+      `INSTRUCTION: ${instruction}`,
+      '',
+      'CURRENT CANVAS STATE: (empty — use "append" to write the initial content)',
+      '',
+      'Now output the JSON edit object.',
+    ].join('\n');
+  }
+
+  console.log(
+    `[generateAgentMutation] canvas snapshot: ${docLength} chars, ${lineCount} lines, ${stubs.length} stubs`,
+  );
+
 
   ctx.heartbeat('generate-mutation:calling-llm');
 
+  const messages: any[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user',   content: userMessage  },
+  ];
+
+  console.log("=== FINAL MESSAGES PAYLOAD ===", JSON.stringify(messages, null, 2));
+
   const completion = await openai.chat.completions.create({
     model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user',   content: userMessage  },
-    ],
+    messages,
     // Request JSON mode if the model supports it (OpenRouter passes this through).
     response_format: { type: 'json_object' },
     temperature: 0.2,  // Low temperature = deterministic, precise edits.

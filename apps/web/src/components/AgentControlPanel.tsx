@@ -18,6 +18,8 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
 }) => {
   const [prompt, setPrompt] = useState("");
 
+  console.log("Frontend received status:", currentStatus);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim()) return;
@@ -47,11 +49,25 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
             Temporal: Planning Task...
           </span>
         );
+      case "reading-canvas":
+        return (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
+            <span className="w-2 h-2 rounded-full bg-[#2563EB] animate-pulse" />
+            Reading Canvas...
+          </span>
+        );
       case "generating":
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#F5F3FF] text-[#6D28D9] border border-[#DDD6FE]">
             <span className="w-2 h-2 rounded-full bg-[#7C3AED] animate-spin" />
-            Generating Code ({currentStatus.tokenCount || 0} tokens)...
+            Thinking... ({currentStatus.tokenCount || 0} tokens)
+          </span>
+        );
+      case "injecting":
+        return (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]">
+            <span className="w-2 h-2 rounded-full bg-[#D97706] animate-bounce" />
+            Injecting Code...
           </span>
         );
       case "sandboxed-testing":
@@ -136,7 +152,12 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Instruct the autonomous agent (e.g., 'Implement binary search with type hints')..."
-          disabled={Boolean(isConnecting || (currentStatus && currentStatus.status !== "committed" && currentStatus.status !== "rolled-back"))}
+          disabled={Boolean(
+            isConnecting ||
+            (currentStatus &&
+              currentStatus.status !== "committed" &&
+              currentStatus.status !== "rolled-back")
+          )}
           className="flex-1 w-full bg-[#FFFFFF] border border-[#E6E2D8] rounded-xl px-4 py-2 text-xs text-[#1F2328] placeholder-[#8C959F] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:opacity-50 transition shadow-apple-sm"
         />
         <div className="flex items-center gap-2 w-full sm:w-auto">
