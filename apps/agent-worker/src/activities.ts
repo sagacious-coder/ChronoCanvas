@@ -172,19 +172,34 @@ export async function generateAgentMutation(
   const openai = getLlmClient();
   const model  = getLlmModel();
 
-  const systemPrompt = `You are an expert autonomous code editor connected directly to a Loro CRDT document. 
+  const systemPrompt = `You are an expert autonomous code editor connected directly to a Loro CRDT document.
 Your task is to modify the provided codebase based on the user's instruction.
 
-CRITICAL RULES:
-1. Do NOT append new functions if an empty stub already exists. You MUST use the "replace" operation to fill in the existing stub.
-2. Output ONLY valid, executable code. Do NOT include markdown formatting, explanations, or module.exports unless explicitly requested.
-3. Your output must strictly match this JSON schema:
+CRITICAL INSTRUCTIONS FOR JSON OUTPUT:
+1. You MUST output ONLY a raw, valid JSON object.
+2. NO markdown formatting, NO triple backticks (\`\`\`), NO language specifiers (e.g., \`\`\`json).
+3. NO boilerplate text, NO conversational filler, NO explanations outside the "rationale" field.
+4. Your output will be parsed directly by \`JSON.parse()\`. Any deviation will cause a fatal crash.
+
+You must choose ONE of the following operations:
+- "insert": Adds text at the specified \`position\`. Requires \`position\` (0-based index) and \`content\`.
+- "replace": Removes \`deleteCount\` characters starting from \`position\`, then inserts \`content\`. Requires \`position\`, \`deleteCount\`, and \`content\`.
+- "append": Adds \`content\` to the end of the document. Requires \`content\`. (\`position\` and \`deleteCount\` are ignored).
+
+CALCULATING POSITION AND DELETECOUNT:
+You MUST count the exact character indices based on the current document state provided below. 0 is the very first character.
+If you use "replace", ensure \`deleteCount\` exactly matches the length of the string you intend to remove.
+
+JSON SCHEMA:
 {
   "operation": "insert" | "replace" | "append",
-  "position": number, // Starting character index
-  "deleteCount": number, // Number of characters to delete (for replace)
-  "content": "the actual code string to inject"
-}`;
+  "position": number, // Required for insert/replace. The 0-based character index.
+  "deleteCount": number, // Required for replace. The number of characters to delete.
+  "content": "string", // The exact text/code to inject. Do not escape newlines manually unless required by JSON.
+  "rationale": "string" // A brief 1-sentence explanation of your edit.
+}
+
+Remember: Output ONLY JSON.`;
 
   const userMessage =
     currentDocumentState.length > 0
@@ -211,10 +226,21 @@ CRITICAL RULES:
     throw new Error('[generateAgentMutation] LLM returned an empty response.');
   }
 
+  // Defensively strip markdown code blocks if the LLM hallucinated them
+  let cleanRaw = raw.trim();
+  if (cleanRaw.startsWith('```')) {
+    const lines = cleanRaw.split('\n');
+    if (lines[0].startsWith('```')) lines.shift();
+    if (lines[lines.length - 1].startsWith('```')) lines.pop();
+    cleanRaw = lines.join('\n').trim();
+  }
+
+  console.log(`[generateAgentMutation] Raw LLM output:\n${cleanRaw}`);
+
   // Validate the response is well-formed JSON with the required fields.
   let mutation: AgentMutation;
   try {
-    mutation = JSON.parse(raw) as AgentMutation;
+    mutation = JSON.parse(cleanRaw) as AgentMutation;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -222,15 +248,28 @@ CRITICAL RULES:
     );
   }
 
-  if (!mutation.operation || !mutation.content || !mutation.rationale) {
+  if (!mutation.operation || typeof mutation.content !== 'string' || typeof mutation.rationale !== 'string') {
     throw new Error(
-      `[generateAgentMutation] LLM response is missing required fields (operation, content, rationale).\n\nParsed: ${JSON.stringify(mutation)}`,
+      `[generateAgentMutation] LLM response is missing basic required fields (operation, content, rationale).\n\nParsed: ${JSON.stringify(mutation)}`,
+    );
+  }
+
+  if (mutation.operation === 'insert' && typeof mutation.position !== 'number') {
+    throw new Error(
+      `[generateAgentMutation] 'insert' operation requires a numeric 'position'.\n\nParsed: ${JSON.stringify(mutation)}`
+    );
+  }
+
+  if (mutation.operation === 'replace' && (typeof mutation.position !== 'number' || typeof mutation.deleteCount !== 'number')) {
+    throw new Error(
+      `[generateAgentMutation] 'replace' operation requires numeric 'position' and 'deleteCount'.\n\nParsed: ${JSON.stringify(mutation)}`
     );
   }
 
   console.log(
     `[generateAgentMutation] op="${mutation.operation}" ` +
     `pos=${mutation.position ?? 'n/a'} ` +
+    `deleteCount=${mutation.deleteCount ?? 'n/a'} ` +
     `content.length=${mutation.content.length}`,
   );
 
