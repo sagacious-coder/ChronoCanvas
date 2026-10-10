@@ -31,6 +31,10 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
     onTriggerTask("Test autonomous error handling and instant rollback", true);
   };
 
+  const handleSimulateSelfHealing = () => {
+    onTriggerTask("Write a python script that prints Hello World but has an intentional IndentationError.", false);
+  };
+
   const getStatusBadge = () => {
     if (!currentStatus) {
       return (
@@ -75,6 +79,13 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]">
             <span className="w-2 h-2 rounded-full bg-[#D97706] animate-bounce" />
             astral-sh/uv: Sandbox Testing (&lt;50ms)...
+          </span>
+        );
+      case "self-healing":
+        return (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA]">
+            <span className="w-2 h-2 rounded-full bg-[#EF4444] animate-pulse" />
+            Syntax Error Caught: Healing...
           </span>
         );
       case "committed":
@@ -167,6 +178,15 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
             className="flex-1 sm:flex-initial px-4 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#F7F4EB] disabled:text-[#8C959F] text-white font-medium text-xs transition shadow-apple-sm cursor-pointer disabled:cursor-not-allowed"
           >
             Dispatch Agent
+          </button>
+          <button
+            type="button"
+            onClick={handleSimulateSelfHealing}
+            disabled={isConnecting}
+            title="Demonstrates catching a syntax error in uv and retrying"
+            className="px-3.5 py-2 rounded-xl bg-[#F7F4EB] hover:bg-[#EFEAD9] text-[#4B515D] border border-[#E6E2D8] font-medium text-xs transition cursor-pointer shadow-apple-sm"
+          >
+            Test Self-Healing
           </button>
           <button
             type="button"

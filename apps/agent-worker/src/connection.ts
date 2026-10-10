@@ -155,7 +155,7 @@ export class BackendSocket {
    *
    * @throws {Error} if the socket is not currently OPEN.
    */
-  sendSyncMessage(envelope: AgentSyncEnvelope): void {
+  sendSyncMessage(envelope: AgentSyncEnvelope | Record<string, unknown>): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error(
         `[BackendSocket:${this.workerId}] cannot send — socket is not open`

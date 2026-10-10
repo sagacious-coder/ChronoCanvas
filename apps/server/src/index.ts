@@ -91,6 +91,7 @@ wss.on('connection', (socket: WebSocket, request) => {
       if (frame.type === 'crdt-sync') handleCrdtSync(ws, frame);
       else if (frame.type === 'awareness-update') handleAwareness(ws, frame);
       else if (frame.type === 'agent-task-request') void handleAgentTaskRequest(ws, frame);
+      else if (frame.type === 'agent-task-status') handleAgentTaskStatus(ws, frame);
       else console.log(`[${connId}] unknown message type: ${String(frame.type)}`);
     } catch (err) {
       console.error(`[${connId}] message handler crashed: ${err instanceof Error ? err.message : String(err)}`);
@@ -211,6 +212,19 @@ function handleAwareness(ws: ClientSocket, message: Record<string, unknown>): vo
   }
 }
 
+// --- agent-task-status -------------------------------------------------------
+// Relay task status updates from the agent worker to the clients
+
+function handleAgentTaskStatus(ws: ClientSocket, message: Record<string, unknown>): void {
+  const taskId = typeof message.taskId === 'string' ? message.taskId : undefined;
+  if (!taskId) return;
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      safeSend(client as ClientSocket, message, `agent-task-status/${taskId}`);
+    }
+  }
+}
+
 // --- agent-task-request -------------------------------------------------------
 // Bridge between the browser's "Dispatch Agent" / "Test Rollback" buttons and
 // the Temporal workflow. The frame arrives over the WebSocket (sent by
@@ -322,7 +336,7 @@ async function handleAgentTaskRequest(
     const handle = await client.workflow.start('agentSyncWorkflow', {
       taskQueue: AGENT_TASK_QUEUE,
       workflowId,
-      args: [{ docId, stateBytes, currentDocumentState, systemInstruction }],
+      args: [{ docId, stateBytes, currentDocumentState, systemInstruction, taskId }],
     });
 
     console.log(`[agent-task] workflow started workflowId=${workflowId}`);

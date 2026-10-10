@@ -27,13 +27,14 @@
 import {
   proxyActivities,
   ApplicationFailure,
+  ActivityFailure,
   type ActivityOptions,
 } from '@temporalio/workflow';
 
 // Type-only import: Temporal's bundler strips the implementation at runtime so
 // we stay inside the sandbox.  The generic parameter is the activity module's
 // export shape — proxyActivities returns stubs with identical signatures.
-import type * as activitiesModule from './activities';
+import type * as activities from './activities';
 
 // ---- Activity options -------------------------------------------------------
 
@@ -70,16 +71,21 @@ const llmActivityOptions: ActivityOptions = {
  * Typed stubs for every activity exported from `./activities`.
  * Add new activities to that module; they appear here automatically.
  */
-const { captureCheckpoint, generateAndInjectResponse, generateAgentMutation } =
-  proxyActivities<typeof activitiesModule>(defaultActivityOptions);
+const { captureCheckpoint, generateAndInjectResponse, generateAgentMutation, emitTaskStatus } =
+  proxyActivities<typeof activities>(defaultActivityOptions);
 
 // For the LLM generation activity we need a separate proxy so it carries its own options.
 const { generateAndInjectResponse: generateAndInjectResponseLLM } =
-  proxyActivities<typeof activitiesModule>(llmActivityOptions);
+  proxyActivities<typeof activities>(llmActivityOptions);
 
 // The mutation generation step uses the LLM proxy timeout (same patience needed).
 const { generateAgentMutation: generateAgentMutationLLM } =
-  proxyActivities<typeof activitiesModule>(llmActivityOptions);
+  proxyActivities<typeof activities>(llmActivityOptions);
+
+const { verifyMutationSyntax } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '10 seconds',
+  retry: { maximumAttempts: 1 } // Force immediate failure back to the workflow loop
+});
 
 // ---- Workflow definitions ---------------------------------------------------
 
@@ -152,6 +158,8 @@ export interface AgentSyncWorkflowInput {
    * @default 'Read the canvas and suggest a coherent continuation or improvement.'
    */
   systemInstruction?: string;
+  /** Task ID for emitting progress updates directly to UI */
+  taskId?: string;
 }
 
 /** Default instruction when the caller supplies none. */
@@ -210,48 +218,68 @@ export async function agentSyncWorkflow(
   const checkpointJson = await captureCheckpoint(input.docId, input.stateBytes);
 
   // ---- Phase 2: Generate the structured mutation ----------------------------
-  //
-  // The LLM proxy carries the longer timeout and capped retry policy.
-  // This step is pure LLM I/O — no CRDT writes — so it is safe to retry
-  // independently if a transient network error occurs.
   let mutationJson: string;
-  try {
-    mutationJson = await generateAgentMutationLLM(instruction, documentState);
-  } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err);
-    throw ApplicationFailure.nonRetryable(
-      `[agentSyncWorkflow] Phase 2 (mutation generation) failed for doc "${input.docId}" — ` +
-      `no CRDT write was attempted. Cause: ${cause}`,
-    );
+  let errorFeedback = '';
+  const MAX_ATTEMPTS = 3;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const prompt = errorFeedback
+        ? `${instruction}\n\nLAST ATTEMPT FAILED WITH:\n${errorFeedback}\nPlease fix the syntax error.`
+        : instruction;
+      
+      mutationJson = await generateAgentMutationLLM(prompt, documentState);
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      throw ApplicationFailure.nonRetryable(
+        `[agentSyncWorkflow] Phase 2 (mutation generation) failed for doc "${input.docId}" — ` +
+        `no CRDT write was attempted. Cause: ${cause}`,
+      );
+    }
+
+    // ---- Phase 2.5: Verify Syntax -------------------------------------------
+    try {
+      if (input.taskId) {
+        await emitTaskStatus(input.taskId, 'sandboxed-testing');
+      }
+      
+      await verifyMutationSyntax(input.stateBytes, mutationJson);
+      
+      // Syntax OK, break out of retry loop to commit
+      break;
+    } catch (err: any) {
+      if (err instanceof ActivityFailure && err.cause instanceof ApplicationFailure && err.cause.message.includes('SYNTAX_ERROR:')) {
+        errorFeedback = err.cause.message;
+        
+        if (input.taskId) {
+          await emitTaskStatus(input.taskId, 'self-healing', errorFeedback);
+        }
+        
+        if (attempt === MAX_ATTEMPTS) {
+          throw ApplicationFailure.nonRetryable(
+            `Self-healing failed after ${MAX_ATTEMPTS} attempts. Last error: ${errorFeedback}`
+          );
+        }
+        // Let loop retry Phase 2
+        continue;
+      }
+      
+      // Re-throw if it's a different error
+      const cause = err instanceof Error ? err.message : String(err);
+      throw ApplicationFailure.nonRetryable(`[agentSyncWorkflow] Verification failed unexpectedly: ${cause}`);
+    }
   }
 
   // ---- Phase 3: Inject mutation into Loro & broadcast ----------------------
-  //
-  // Pass the structured mutationJson as the systemInstruction so
-  // generateAndInjectResponse can parse and apply it precisely.
-  // The activity owns all Loro mutations and rollback; the workflow never
-  // touches `doc` or `doc.checkout()` directly (Temporal determinism rule).
   try {
     const generatedText = await generateAndInjectResponseLLM(
       input.docId,
       input.stateBytes,
-      mutationJson,
+      mutationJson!,
       checkpointJson,
     );
     return generatedText;
   } catch (err) {
-    // The activity already performed `doc.checkout()` and broadcast the reverted
-    // state before throwing. Re-throw as a NON-RETRYABLE ApplicationFailure so the
-    // Workflow EXECUTION fails terminally.
-    //
-    // Gotcha (Temporal TS SDK): throwing a plain `Error` from workflow code does
-    // NOT fail the execution — a non-TemporalFailure is treated as a (possibly
-    // transient) Workflow TASK failure and retried indefinitely. The execution
-    // then never reaches a terminal state, so the server's `await handle.result()`
-    // never resolves or rejects and the "Generating…" badge hangs forever.
-    // `ApplicationFailure` IS a TemporalFailure, and `.nonRetryable` guarantees no
-    // workflow-level retry, so the execution fails at once, `handle.result()`
-    // rejects, and index.ts flips the UI to 'rolled-back'.
     const cause = err instanceof Error ? err.message : String(err);
     throw ApplicationFailure.nonRetryable(
       `[agentSyncWorkflow] Phase 3 failed for doc "${input.docId}" — ` +

@@ -27,7 +27,7 @@
  *   - `CHRONO_WORKER_ID`      — stable worker id stamped on the AgentSyncEnvelope.
  */
 
-import { Context } from '@temporalio/activity';
+import { Context, ApplicationFailure } from '@temporalio/activity';
 import { LoroDoc } from 'loro-crdt';
 import type { LoroCheckpoint, FrontierEntry, AgentSyncEnvelope } from './types';
 import { getBackendSocket } from './connection';
@@ -623,3 +623,97 @@ export async function generateAndInjectResponse(
     throw err;
   }
 }
+
+// ---- Emit Status -------------------------------------------------------------
+
+/**
+ * Activity to emit an intermediate status directly to the frontend via WebSocket.
+ */
+export async function emitTaskStatus(taskId: string, status: string, errorTrace?: string): Promise<void> {
+  const workerId = process.env.CHRONO_WORKER_ID ?? 'agent-worker';
+  const socket = getBackendSocket(workerId);
+  if (!socket.isConnected) {
+    await socket.connect();
+  }
+  const msg: Record<string, unknown> = {
+    type: 'agent-task-status',
+    taskId,
+    status,
+  };
+  if (errorTrace) {
+    msg.errorTrace = errorTrace;
+  }
+  socket.sendSyncMessage(msg);
+}
+
+// ---- Verify Syntax ----------------------------------------------------------
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execSync } from 'node:child_process';
+
+/**
+ * Sandboxed testing activity — applies the mutation to a local headless Loro doc,
+ * writes the resulting code to a temp file, and verifies it with uv run python.
+ */
+export async function verifyMutationSyntax(
+  stateBytes: number[],
+  mutationJson: string
+): Promise<void> {
+  const ctx = Context.current();
+  ctx.heartbeat('sandboxed-testing');
+
+  // Load Loro state
+  const doc = new LoroDoc();
+  const bytes = new Uint8Array(stateBytes);
+  if (bytes.length > 0) {
+    doc.import(bytes);
+  }
+
+  // Parse mutation
+  const mutation = JSON.parse(mutationJson) as AgentMutation;
+  const textContainer = doc.getText('codemirror');
+  const docLength = textContainer.length;
+  const currentText = textContainer.toString();
+
+  switch (mutation.operation) {
+    case 'insert':
+      textContainer.insert(Math.min(mutation.position ?? docLength, docLength), mutation.content);
+      break;
+    case 'replace':
+      const pos = Math.min(mutation.position ?? 0, docLength);
+      const del = Math.min(mutation.deleteCount ?? 0, docLength - pos);
+      if (del > 0) textContainer.delete(pos, del);
+      textContainer.insert(pos, mutation.content);
+      break;
+    case 'append':
+    default:
+      const prefix = currentText.length > 0 ? '\n' : '';
+      textContainer.insert(docLength, prefix + mutation.content);
+      break;
+  }
+
+  const generatedCode = textContainer.toString();
+  
+  // Write to ephemeral file
+  const tempFile = path.join(os.tmpdir(), `test_${Date.now()}_${Math.random().toString(36).substring(7)}.py`);
+  fs.writeFileSync(tempFile, generatedCode);
+
+  try {
+    // Run syntax check
+    // Ensure we use uv for testing as per requirements
+    execSync(`uv run python -m py_compile ${tempFile}`, { stdio: 'pipe' });
+  } catch (err: any) {
+    // The command failed, return the stderr for the LLM
+    const stderr = err.stderr ? err.stderr.toString() : err.message;
+    throw ApplicationFailure.nonRetryable(`SYNTAX_ERROR: ${stderr}`);
+  } finally {
+    try {
+      fs.unlinkSync(tempFile);
+    } catch {
+      // ignore
+    }
+  }
+}
+
