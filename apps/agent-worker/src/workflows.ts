@@ -151,7 +151,7 @@ export interface AgentSyncWorkflowInput {
    *
    * Pass an empty string when the canvas is blank.
    */
-  currentDocumentState: string;
+  currentDocumentState?: string;
   /**
    * The user's natural-language instruction sent to the LLM.
    *

@@ -46,6 +46,7 @@ async function run(): Promise<void> {
   const input: AgentSyncWorkflowInput = {
     docId: 'chrono-canvas-default',
     stateBytes: [],
+    currentDocumentState: '',
     systemInstruction:
       'Read the canvas text and append a short, coherent 1-sentence continuation.',
   };

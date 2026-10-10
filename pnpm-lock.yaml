@@ -88,9 +88,6 @@ importers:
 
   apps/web:
     dependencies:
-      '@chronocanvas/shared-types':
-        specifier: workspace:*
-        version: link:../../packages/shared-types
       '@codemirror/commands':
         specifier: ^6.8.0
         version: 6.11.1
