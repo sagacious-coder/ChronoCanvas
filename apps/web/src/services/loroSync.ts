@@ -24,11 +24,12 @@ export interface LoroSyncOptions {
   peerId?: string;
   authToken?: string;
   apiKey?: string;
+  provider?: "openai" | "anthropic" | "openrouter";
   autoReconnect?: boolean;
   reconnectIntervalMs?: number;
   onStatusChange?: (status: ConnectionStatus) => void;
   onStatsChange?: (stats: SyncStats) => void;
-  onAgentStatusChange?: (status: AgentTaskStatus) => void;
+  onAgentStatusChange?: (status: AgentTaskStatus | null) => void;
   onRemoteAwareness?: (peer: PeerAwareness) => void;
   onAuthSuccess?: (msg: AuthSuccessMessage) => void;
   onAuthError?: (msg: AuthErrorMessage) => void;
@@ -60,10 +61,12 @@ export class LoroSyncClient {
   private peerId: string;
   private authToken: string;
   private apiKey?: string;
+  private provider?: "openai" | "anthropic" | "openrouter";
   private ws: WebSocket | null = null;
   private lastVersion: VersionVector | undefined;
   private unsubscribeDoc: (() => void) | null = null;
   private reconnectTimer: any = null;
+  private agentStatusResetTimer: any = null;
   private isDestroyed = false;
 
   public isAuthenticated = false;
@@ -85,12 +88,14 @@ export class LoroSyncClient {
     this.peerId = options.peerId || `client-${Math.random().toString(36).substring(2, 9)}`;
     this.authToken = options.authToken || "dev-dummy-token";
     this.apiKey = options.apiKey;
+    this.provider = options.provider;
     this.options = {
       url: this.url,
       docId: this.docId,
       peerId: this.peerId,
       authToken: this.authToken,
       apiKey: this.apiKey ?? "",
+      provider: this.provider ?? "openrouter",
       autoReconnect: options.autoReconnect ?? true,
       reconnectIntervalMs: options.reconnectIntervalMs ?? 3000,
       onStatusChange: options.onStatusChange || (() => {}),
@@ -104,6 +109,12 @@ export class LoroSyncClient {
     // Initialize baseline version vector
     this.lastVersion = this.doc.version();
     this.setupDocSubscription();
+  }
+
+  public setCredentials(authToken: string, apiKey?: string, provider?: "openai" | "anthropic" | "openrouter") {
+    this.authToken = authToken;
+    this.apiKey = apiKey;
+    this.provider = provider;
   }
 
   private setStatus(status: ConnectionStatus) {
@@ -146,6 +157,7 @@ export class LoroSyncClient {
           type: "auth",
           token: this.authToken || "dev-dummy-token",
           ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+          ...(this.provider ? { provider: this.provider } : {}),
         };
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify(authPayload));
@@ -207,7 +219,19 @@ export class LoroSyncClient {
                 this.options.onRemoteAwareness(message.peer);
               }
             } else if (message.type === "agent-task-status") {
-              this.options.onAgentStatusChange(message);
+              const statusMsg = message as AgentTaskStatus;
+              this.options.onAgentStatusChange?.(statusMsg);
+
+              // Reset terminal states ('completed' or 'failed') to idle after 3 seconds
+              if (statusMsg.status === "completed" || statusMsg.status === "failed") {
+                if (this.agentStatusResetTimer) {
+                  clearTimeout(this.agentStatusResetTimer);
+                }
+                this.agentStatusResetTimer = setTimeout(() => {
+                  this.options.onAgentStatusChange?.(null);
+                  this.agentStatusResetTimer = null;
+                }, 3000);
+              }
             }
           } catch (err) {
             console.error("[LoroSync] Error parsing JSON frame:", err);
@@ -282,7 +306,12 @@ export class LoroSyncClient {
     this.ws.send(JSON.stringify(message));
   }
 
-  public dispatchAgentTask(prompt: string, simulateFailure = false) {
+  public dispatchAgentTask(
+    prompt: string,
+    simulateFailure = false,
+    taskApiKey?: string,
+    taskProvider?: "openai" | "anthropic" | "openrouter",
+  ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const taskId = `task-${Date.now()}`;
@@ -292,18 +321,42 @@ export class LoroSyncClient {
       docId: this.docId,
       prompt,
       simulateFailure,
+      apiKey: taskApiKey || this.apiKey,
+      provider: taskProvider || this.provider,
     };
 
     this.ws.send(JSON.stringify(request));
   }
 
   public getFrontierString(): string {
-    const f = this.doc.frontiers();
-    return f.length > 0 ? JSON.stringify(f) : "root-0";
+    try {
+      const f = this.doc.frontiers();
+      if (!f || f.length === 0) return "root-0";
+      return JSON.stringify(f, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+    } catch {
+      return "root-0";
+    }
+  }
+
+  public getFrontierEntries(): { peer: string; counter: number }[] {
+    try {
+      const f = this.doc.frontiers();
+      if (!f) return [];
+      return f.map((entry) => ({
+        peer: typeof entry.peer === "bigint" ? entry.peer.toString() : String(entry.peer),
+        counter: Number(entry.counter),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   public disconnect() {
     clearTimeout(this.reconnectTimer);
+    if (this.agentStatusResetTimer) {
+      clearTimeout(this.agentStatusResetTimer);
+      this.agentStatusResetTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;

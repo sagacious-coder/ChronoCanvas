@@ -212,80 +212,99 @@ export async function agentSyncWorkflow(
   const instruction = input.systemInstruction ?? DEFAULT_INSTRUCTION;
   const documentState = input.currentDocumentState ?? '';
 
-  // ---- Phase 1: Capture checkpoint -----------------------------------------
-  //
-  // Use the fast proxy (30 s timeout) — this is a read-only Loro op.
-  // The resulting JSON is passed directly into Phase 3, making the rollback
-  // target a durable, inspectable entry in Temporal's workflow history.
-  const checkpointJson = await captureCheckpoint(input.docId, input.stateBytes);
+  try {
+    // ---- Phase 1: Capture checkpoint -----------------------------------------
+    //
+    // Use the fast proxy (30 s timeout) — this is a read-only Loro op.
+    // The resulting JSON is passed directly into Phase 3, making the rollback
+    // target a durable, inspectable entry in Temporal's workflow history.
+    const checkpointJson = await captureCheckpoint(input.docId, input.stateBytes);
 
-  // ---- Phase 2: Generate the structured mutation ----------------------------
-  let mutationJson: string;
-  let errorFeedback = '';
-  const MAX_ATTEMPTS = 3;
+    // ---- Phase 2: Generate the structured mutation ----------------------------
+    let mutationJson: string;
+    let errorFeedback = '';
+    const MAX_ATTEMPTS = 3;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const prompt = errorFeedback
+          ? `${instruction}\n\nLAST ATTEMPT FAILED WITH:\n${errorFeedback}\nPlease fix the syntax error.`
+          : instruction;
+        
+        mutationJson = await generateAgentMutationLLM(prompt, documentState, input.apiKey);
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        throw ApplicationFailure.nonRetryable(
+          `[agentSyncWorkflow] Phase 2 (mutation generation) failed for doc "${input.docId}" — ` +
+          `no CRDT write was attempted. Cause: ${cause}`,
+        );
+      }
+
+      // ---- Phase 2.5: Verify Syntax -------------------------------------------
+      try {
+        if (input.taskId) {
+          await emitTaskStatus(input.taskId, 'sandboxed-testing');
+        }
+        
+        await verifyMutationSyntax(input.stateBytes, mutationJson);
+        
+        // Syntax OK, break out of retry loop to commit
+        break;
+      } catch (err: any) {
+        if (err instanceof ActivityFailure && err.cause instanceof ApplicationFailure && err.cause.message.includes('SYNTAX_ERROR:')) {
+          errorFeedback = err.cause.message;
+          
+          if (input.taskId) {
+            await emitTaskStatus(input.taskId, 'self-healing', errorFeedback);
+          }
+          
+          if (attempt === MAX_ATTEMPTS) {
+            throw ApplicationFailure.nonRetryable(
+              `Self-healing failed after ${MAX_ATTEMPTS} attempts. Last error: ${errorFeedback}`
+            );
+          }
+          // Let loop retry Phase 2
+          continue;
+        }
+        
+        // Re-throw if it's a different error
+        const cause = err instanceof Error ? err.message : String(err);
+        throw ApplicationFailure.nonRetryable(`[agentSyncWorkflow] Verification failed unexpectedly: ${cause}`);
+      }
+    }
+
+    // ---- Phase 3: Inject mutation into Loro & broadcast ----------------------
     try {
-      const prompt = errorFeedback
-        ? `${instruction}\n\nLAST ATTEMPT FAILED WITH:\n${errorFeedback}\nPlease fix the syntax error.`
-        : instruction;
-      
-      mutationJson = await generateAgentMutationLLM(prompt, documentState, input.apiKey);
+      const generatedText = await generateAndInjectResponseLLM(
+        input.docId,
+        input.stateBytes,
+        mutationJson!,
+        checkpointJson,
+      );
+
+      // Task fully succeeded (whether on first try or after self-healing): broadcast completed
+      if (input.taskId) {
+        await emitTaskStatus(input.taskId, 'completed');
+      }
+
+      return generatedText;
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       throw ApplicationFailure.nonRetryable(
-        `[agentSyncWorkflow] Phase 2 (mutation generation) failed for doc "${input.docId}" — ` +
-        `no CRDT write was attempted. Cause: ${cause}`,
+        `[agentSyncWorkflow] Phase 3 failed for doc "${input.docId}" — ` +
+        `rollback was executed by the activity. Cause: ${cause}`,
       );
     }
-
-    // ---- Phase 2.5: Verify Syntax -------------------------------------------
-    try {
-      if (input.taskId) {
-        await emitTaskStatus(input.taskId, 'sandboxed-testing');
-      }
-      
-      await verifyMutationSyntax(input.stateBytes, mutationJson);
-      
-      // Syntax OK, break out of retry loop to commit
-      break;
-    } catch (err: any) {
-      if (err instanceof ActivityFailure && err.cause instanceof ApplicationFailure && err.cause.message.includes('SYNTAX_ERROR:')) {
-        errorFeedback = err.cause.message;
-        
-        if (input.taskId) {
-          await emitTaskStatus(input.taskId, 'self-healing', errorFeedback);
-        }
-        
-        if (attempt === MAX_ATTEMPTS) {
-          throw ApplicationFailure.nonRetryable(
-            `Self-healing failed after ${MAX_ATTEMPTS} attempts. Last error: ${errorFeedback}`
-          );
-        }
-        // Let loop retry Phase 2
-        continue;
-      }
-      
-      // Re-throw if it's a different error
-      const cause = err instanceof Error ? err.message : String(err);
-      throw ApplicationFailure.nonRetryable(`[agentSyncWorkflow] Verification failed unexpectedly: ${cause}`);
-    }
-  }
-
-  // ---- Phase 3: Inject mutation into Loro & broadcast ----------------------
-  try {
-    const generatedText = await generateAndInjectResponseLLM(
-      input.docId,
-      input.stateBytes,
-      mutationJson!,
-      checkpointJson,
-    );
-    return generatedText;
   } catch (err) {
-    const cause = err instanceof Error ? err.message : String(err);
-    throw ApplicationFailure.nonRetryable(
-      `[agentSyncWorkflow] Phase 3 failed for doc "${input.docId}" — ` +
-      `rollback was executed by the activity. Cause: ${cause}`,
-    );
+    // If the task completely fails and exhausts retries or aborts, broadcast failed
+    if (input.taskId) {
+      try {
+        const cause = err instanceof Error ? err.message : String(err);
+        await emitTaskStatus(input.taskId, 'failed', cause);
+      } catch {
+        // Suppress secondary emit failure
+      }
+    }
+    throw err;
   }
 }

@@ -89,11 +89,12 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
           </span>
         );
       case "committed":
+      case "completed":
         return (
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6]">
               <span className="w-2 h-2 rounded-full bg-[#137333]" />
-              Verified & Committed to Canvas
+              Verified & Completed
             </span>
             {onClearStatus && (
               <button
@@ -121,6 +122,25 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
                 onClick={onClearStatus}
                 title="Dismiss feedback"
                 className="text-xs text-[#137333] hover:text-[#0D5224] transition cursor-pointer font-bold"
+              >
+                ✕ Dismiss
+              </button>
+            )}
+          </div>
+        );
+      case "failed":
+        return (
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA]">
+              <span className="w-2 h-2 rounded-full bg-[#EF4444]" />
+              Task Failed (Retries Exhausted)
+            </span>
+            {onClearStatus && (
+              <button
+                type="button"
+                onClick={onClearStatus}
+                title="Dismiss feedback"
+                className="text-xs text-[#DC2626] hover:text-[#991B1B] transition cursor-pointer font-bold"
               >
                 ✕ Dismiss
               </button>

@@ -36,6 +36,12 @@ import { getLlmClient, getLlmModel } from './llm';
 // (Phase 2).  generateAndInjectResponse (Phase 3) applies the pre-computed
 // AgentMutation directly to Loro without a second LLM round-trip.
 
+/**
+ * Static 64-bit Peer ID assigned to the autonomous AI agent.
+ * Enforces clear attribution in Loro CRDT frontiers and timeline version control.
+ */
+const AGENT_PEER_ID = '999999999';
+
 // ---- Helpers ----------------------------------------------------------------
 
 /**
@@ -76,6 +82,7 @@ export async function captureCheckpoint(
   ctx.heartbeat('starting-loro-import');
 
   const doc = new LoroDoc();
+  doc.setPeerId(AGENT_PEER_ID);
 
   // Convert the plain-number array (JSON-serialisable across the Temporal
   // activity boundary) back into a Uint8Array for Loro.
@@ -402,6 +409,7 @@ export async function generateAndInjectResponse(
   ctx.heartbeat('loading-loro-state');
 
   const doc = new LoroDoc();
+  doc.setPeerId(AGENT_PEER_ID);
   const bytes = new Uint8Array(stateBytes);
 
   if (bytes.length > 0) {
@@ -668,6 +676,7 @@ export async function verifyMutationSyntax(
 
   // Load Loro state
   const doc = new LoroDoc();
+  doc.setPeerId(AGENT_PEER_ID);
   const bytes = new Uint8Array(stateBytes);
   if (bytes.length > 0) {
     doc.import(bytes);

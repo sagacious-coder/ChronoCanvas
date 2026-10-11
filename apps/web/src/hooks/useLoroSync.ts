@@ -2,15 +2,23 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
 import { AgentTaskStatus, PeerAwareness, AuthSuccessMessage, AuthErrorMessage } from "../types/shared";
+import { loadUserSettings, getActiveApiKey, LlmProvider } from "../components/SettingsModal";
 
 export function useLoroSync(
   doc: LoroDoc,
   serverUrl = "ws://localhost:3001",
   docId = "chrono-canvas-default",
   peerId?: string,
-  authToken = "dev-dummy-token",
+  authToken?: string,
   apiKey?: string,
+  provider?: LlmProvider,
 ) {
+  // If not supplied directly via props, dynamically resolve from browser localStorage settings
+  const localSettings = loadUserSettings();
+  const effectiveAuthToken = authToken !== undefined ? authToken : (localSettings.jwtToken || "dev-dummy-token");
+  const effectiveApiKey = apiKey !== undefined ? apiKey : getActiveApiKey(localSettings);
+  const effectiveProvider = provider !== undefined ? provider : localSettings.selectedProvider;
+
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -49,8 +57,9 @@ export function useLoroSync(
       url: serverUrl,
       docId,
       peerId,
-      authToken,
-      apiKey,
+      authToken: effectiveAuthToken,
+      apiKey: effectiveApiKey,
+      provider: effectiveProvider,
       onStatusChange: setStatus,
       onStatsChange: setStats,
       onAgentStatusChange: setAgentStatus,
@@ -66,11 +75,30 @@ export function useLoroSync(
       client.destroy();
       clientRef.current = null;
     };
-  }, [doc, serverUrl, docId, peerId, authToken, apiKey, handleRemoteAwareness, handleAuthSuccess, handleAuthError]);
+  }, [
+    doc,
+    serverUrl,
+    docId,
+    peerId,
+    effectiveAuthToken,
+    effectiveApiKey,
+    effectiveProvider,
+    handleRemoteAwareness,
+    handleAuthSuccess,
+    handleAuthError,
+  ]);
 
-  const dispatchAgentTask = useCallback((prompt: string, simulateFailure = false, taskApiKey?: string) => {
-    clientRef.current?.dispatchAgentTask(prompt, simulateFailure, taskApiKey);
-  }, []);
+  const dispatchAgentTask = useCallback(
+    (prompt: string, simulateFailure = false, taskApiKey?: string, taskProvider?: LlmProvider) => {
+      clientRef.current?.dispatchAgentTask(
+        prompt,
+        simulateFailure,
+        taskApiKey || effectiveApiKey,
+        taskProvider || effectiveProvider,
+      );
+    },
+    [effectiveApiKey, effectiveProvider],
+  );
 
   const clearAgentStatus = useCallback(() => {
     setAgentStatus(null);
@@ -84,6 +112,18 @@ export function useLoroSync(
     return clientRef.current?.getFrontierString() || "Latest";
   }, []);
 
+  const getFrontierEntries = useCallback(() => {
+    return clientRef.current?.getFrontierEntries() || [];
+  }, []);
+
+  const reconnect = useCallback(() => {
+    if (clientRef.current) {
+      clientRef.current.setCredentials(effectiveAuthToken, effectiveApiKey, effectiveProvider);
+      clientRef.current.disconnect();
+      clientRef.current.connect();
+    }
+  }, [effectiveAuthToken, effectiveApiKey, effectiveProvider]);
+
   return {
     status,
     isAuthenticated,
@@ -95,7 +135,8 @@ export function useLoroSync(
     clearAgentStatus,
     broadcastAwareness,
     getFrontierString,
-    reconnect: () => clientRef.current?.connect(),
+    getFrontierEntries,
+    reconnect,
     sendUpdate: () => clientRef.current?.exportAndSendUpdate(),
   };
 }

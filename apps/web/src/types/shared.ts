@@ -18,6 +18,12 @@ export interface PeerAwareness {
   isAgent?: boolean;
 }
 
+/**
+ * Static 64-bit Peer ID for the autonomous AI agent worker ("999999999").
+ * Enforces clear attribution in Loro CRDT frontiers and timeline version control.
+ */
+export const AGENT_PEER_ID = "999999999" as const;
+
 export interface SyncMessage {
   type: 'crdt-sync';
   docId: string;
@@ -75,7 +81,9 @@ export interface AgentTaskStatus {
     | 'sandboxed-testing'  // Sandbox testing phase
     | 'self-healing'       // Error caught, LLM is retrying
     | 'committed'          // Terminal success: CRDT delta broadcast, canvas updated
-    | 'rolled-back';       // Terminal failure: agent ops reverted, canvas restored
+    | 'completed'          // Final terminal success broadcast to all connected clients
+    | 'rolled-back'        // Terminal failure: agent ops reverted, canvas restored
+    | 'failed';            // Final terminal failure broadcast to all connected clients
   preFlightTestsPassed?: boolean;
   rollbackTriggered?: boolean;
   errorTrace?: string;
