@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
-import { AgentTaskStatus, PeerAwareness } from "../types/shared";
+import { AgentTaskStatus, PeerAwareness, ByokConfig } from "../types/shared";
 
 export function useLoroSync(
   doc: LoroDoc,
@@ -50,9 +50,19 @@ export function useLoroSync(
     };
   }, [doc, serverUrl, docId, peerId, handleRemoteAwareness]);
 
-  const dispatchAgentTask = useCallback((prompt: string, simulateFailure = false) => {
-    clientRef.current?.dispatchAgentTask(prompt, simulateFailure);
-  }, []);
+  const dispatchAgentTask = useCallback(
+    (
+      prompt: string,
+      simulateFailure = false,
+      failureType: "syntax" | "assertion" = "syntax",
+      enableSelfHealing = false,
+      byokConfig?: ByokConfig,
+      authToken?: string
+    ) => {
+      clientRef.current?.dispatchAgentTask(prompt, simulateFailure, failureType, enableSelfHealing, byokConfig, authToken);
+    },
+    []
+  );
 
   const clearAgentStatus = useCallback(() => {
     setAgentStatus(null);

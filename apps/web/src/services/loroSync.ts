@@ -3,6 +3,7 @@ import {
   AgentTaskStatus,
   PeerAwareness,
   SyncMessage,
+  ByokConfig,
 } from "../types/shared";
 
 export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
@@ -37,71 +38,55 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const len = binary.length;
+  const binaryString = atob(base64);
+  const len = binaryString.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
+    bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
 }
 
 export class LoroSyncClient {
   private doc: LoroDoc;
-  private url: string;
-  private docId: string;
-  private peerId: string;
   private ws: WebSocket | null = null;
-  private lastVersion: VersionVector | undefined;
-  private unsubscribeDoc: (() => void) | null = null;
-  private reconnectTimer: any = null;
-  private isDestroyed = false;
-
-  public status: ConnectionStatus = "disconnected";
-  public stats: SyncStats = {
+  private options: Required<LoroSyncOptions>;
+  private status: ConnectionStatus = "disconnected";
+  private stats: SyncStats = {
     bytesSent: 0,
     bytesReceived: 0,
     updatesSent: 0,
     updatesReceived: 0,
     lastSyncAt: null,
   };
+  private lastVersion: VersionVector | null = null;
+  private reconnectTimer: any = null;
+  private isDestroyed = false;
+  private unsubscribeDoc: (() => void) | null = null;
 
-  private options: Required<LoroSyncOptions>;
+  public readonly docId: string;
+  public readonly peerId: string;
 
   constructor(doc: LoroDoc, options: LoroSyncOptions = {}) {
     this.doc = doc;
-    this.url = options.url || "ws://localhost:3001";
     this.docId = options.docId || "chrono-canvas-default";
-    this.peerId = options.peerId || `client-${Math.random().toString(36).substring(2, 9)}`;
+    this.peerId = options.peerId || doc.peerIdStr;
+
     this.options = {
-      url: this.url,
+      url: options.url || "ws://localhost:3001",
       docId: this.docId,
       peerId: this.peerId,
       autoReconnect: options.autoReconnect ?? true,
-      reconnectIntervalMs: options.reconnectIntervalMs ?? 3000,
+      reconnectIntervalMs: options.reconnectIntervalMs || 2000,
       onStatusChange: options.onStatusChange || (() => {}),
       onStatsChange: options.onStatsChange || (() => {}),
       onAgentStatusChange: options.onAgentStatusChange || (() => {}),
       onRemoteAwareness: options.onRemoteAwareness || (() => {}),
     };
 
-    // Initialize baseline version vector
-    this.lastVersion = this.doc.version();
-    this.setupDocSubscription();
-  }
-
-  private setStatus(status: ConnectionStatus) {
-    if (this.status === status) return;
-    this.status = status;
-    this.options.onStatusChange(status);
-  }
-
-  private setupDocSubscription() {
-    const sub = this.doc.subscribe((event) => {
-      // Export only local changes to prevent reflection loops
-      if (event.by === "local") {
-        this.exportAndSendUpdate();
-      }
+    // Auto-export local changes when user types in CodeMirror
+    const sub = this.doc.subscribe(() => {
+      this.exportAndSendUpdate();
     });
 
     if (typeof sub === "function") {
@@ -111,42 +96,46 @@ export class LoroSyncClient {
     }
   }
 
-  public connect() {
-    if (this.isDestroyed) return;
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
+  private setStatus(next: ConnectionStatus) {
+    if (this.status !== next) {
+      this.status = next;
+      this.options.onStatusChange(next);
     }
+  }
+
+  public connect() {
+    if (this.isDestroyed || this.ws) return;
 
     this.setStatus("connecting");
 
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.options.url);
+      this.ws.binaryType = "arraybuffer";
 
       this.ws.onopen = () => {
         this.setStatus("connected");
-
-        // Send crdt-sync frame (JSON with base64 payload + docId) to register room membership
-        const snapshot = this.doc.export({ mode: "snapshot" });
-        const syncMsg: SyncMessage = {
-          type: "crdt-sync",
-          docId: this.docId,
-          payload: uint8ArrayToBase64(snapshot),
-          senderId: this.peerId,
-          timestamp: Date.now(),
-        };
-
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          const jsonPayload = JSON.stringify(syncMsg);
-          this.ws.send(jsonPayload);
-          this.stats.bytesSent += snapshot.length;
-          this.stats.updatesSent += 1;
-          this.stats.lastSyncAt = new Date();
-          this.options.onStatsChange({ ...this.stats });
-        }
+        // Handshake: export current state to peer
+        this.exportAndSendUpdate();
       };
 
-      this.ws.onmessage = async (event) => {
-        // MU server protocol: All frames are JSON text frames
+      this.ws.onmessage = (event) => {
+        // Binary CRDT updates
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          if (bytes.length > 0) {
+            this.doc.import(bytes);
+            this.doc.commit();
+            this.lastVersion = this.doc.version();
+
+            this.stats.bytesReceived += bytes.length;
+            this.stats.updatesReceived += 1;
+            this.stats.lastSyncAt = new Date();
+            this.options.onStatsChange({ ...this.stats });
+          }
+          return;
+        }
+
+        // Text / JSON updates (crdt-sync, awareness, agent status)
         if (typeof event.data === "string") {
           try {
             const message = JSON.parse(event.data);
@@ -242,7 +231,14 @@ export class LoroSyncClient {
     this.ws.send(JSON.stringify(message));
   }
 
-  public dispatchAgentTask(prompt: string, simulateFailure = false) {
+  public dispatchAgentTask(
+    prompt: string,
+    simulateFailure = false,
+    failureType: "syntax" | "assertion" = "syntax",
+    enableSelfHealing = false,
+    byokConfig?: ByokConfig,
+    authToken?: string
+  ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const taskId = `task-${Date.now()}`;
@@ -252,6 +248,11 @@ export class LoroSyncClient {
       docId: this.docId,
       prompt,
       simulateFailure,
+      failureType,
+      enableSelfHealing,
+      byokConfig,
+      authToken,
+      docFrontier: this.getFrontierString(),
     };
 
     this.ws.send(JSON.stringify(request));

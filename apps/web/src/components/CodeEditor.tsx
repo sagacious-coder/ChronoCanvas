@@ -17,6 +17,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
 import { CursorPosition, PeerAwareness } from "../types/shared";
+import { ThemeConfig, getTheme } from "../styles/themes";
 
 export interface UserPresence {
   name: string;
@@ -33,6 +34,7 @@ interface CodeEditorProps {
   rollbackMessage?: string | null;
   onCursorChange?: (cursor: CursorPosition, selection?: { anchor: number; head: number }) => void;
   className?: string;
+  themeConfig?: ThemeConfig;
 }
 
 /**
@@ -79,9 +81,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   rollbackMessage = null,
   onCursorChange,
   className = "",
+  themeConfig,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const editorViewRef = useRef<EditorView | null>(null);
+  const activeTheme = themeConfig || getTheme("daylight");
 
   // Broadcast cursor movements via updateListener
   const cursorUpdateListener = EditorView.updateListener.of((update: ViewUpdate) => {
@@ -106,29 +110,29 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     const undoManager = new UndoManager(doc, {});
 
-    // Apple Human Interface creamy theme for CodeMirror 6
-    const appleCreamyTheme = EditorView.theme({
+    // Dynamic theme for CodeMirror 6 adhering to active theme configuration
+    const dynamicEditorTheme = EditorView.theme({
       "&": {
-        color: "#1F2328",
-        backgroundColor: "#FAF8F5",
+        color: activeTheme.colors.text,
+        backgroundColor: activeTheme.colors.editorBg,
         fontSize: "13.5px",
       },
       ".cm-content": {
-        caretColor: "#2563EB",
+        caretColor: activeTheme.colors.accent,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#2563EB" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: activeTheme.colors.accent },
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-        backgroundColor: "#DDE5F5",
+        backgroundColor: activeTheme.colors.editorSelection,
       },
       ".cm-gutters": {
-        backgroundColor: "#F4EFE6",
-        color: "#8C8273",
-        borderRight: "1px solid #E6E2D8",
+        backgroundColor: activeTheme.colors.editorGutter,
+        color: activeTheme.colors.editorGutterText,
+        borderRight: `1px solid ${activeTheme.colors.border}`,
       },
-      ".cm-activeLine": { backgroundColor: "#F1EBE0" },
-      ".cm-activeLineGutter": { backgroundColor: "#E8E1D2", color: "#1F2328" },
-    }, { dark: false });
+      ".cm-activeLine": { backgroundColor: activeTheme.colors.headerBg },
+      ".cm-activeLineGutter": { backgroundColor: activeTheme.colors.borderHover, color: activeTheme.colors.text },
+    }, { dark: activeTheme.isDark });
 
     const extensions: Extension[] = [
       lineNumbers(),
@@ -140,7 +144,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       bracketMatching(),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       javascript({ typescript: true }),
-      appleCreamyTheme,
+      dynamicEditorTheme,
       keymap.of([...defaultKeymap, indentWithTab]),
       cursorUpdateListener,
       LoroExtensions(
@@ -194,21 +198,40 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       view.destroy();
       editorViewRef.current = null;
     };
-  }, [doc, awareness, currentUser]);
+  }, [doc, awareness, currentUser, activeTheme]);
 
   const activePeerList = remotePeers ? Array.from(remotePeers.values()) : [];
 
   return (
     <div
-      className={`relative border border-[#E6E2D8] rounded-2xl overflow-hidden shadow-apple-md bg-[#FAF8F5] flex flex-col transition-all duration-300 ${
+      style={{
+        backgroundColor: activeTheme.colors.cardBg,
+        borderColor: activeTheme.colors.border,
+      }}
+      className={`relative border rounded-2xl overflow-hidden shadow-apple-md flex flex-col transition-all duration-300 ${
         isRollbackActive ? "revert-pulse-active" : ""
       } ${className}`}
     >
       {/* Editor Sub-header with Active Presence & AI Streaming Banner */}
-      <div className="flex items-center justify-between px-5 py-2.5 bg-[#F7F4EB] border-b border-[#E6E2D8] text-xs">
+      <div
+        style={{
+          backgroundColor: activeTheme.colors.headerBg,
+          borderColor: activeTheme.colors.border,
+        }}
+        className="flex items-center justify-between px-5 py-2.5 border-b text-xs"
+      >
         <div className="flex items-center gap-2">
-          <span className="text-[#1F2328] font-mono font-medium">main.ts</span>
-          <span className="text-[10px] text-[#656D76] bg-[#FFFFFF] px-2 py-0.5 rounded-md border border-[#E6E2D8] font-mono">
+          <span style={{ color: activeTheme.colors.text }} className="font-mono font-medium">
+            main.ts
+          </span>
+          <span
+            style={{
+              backgroundColor: activeTheme.colors.bg,
+              borderColor: activeTheme.colors.border,
+              color: activeTheme.colors.textMuted,
+            }}
+            className="text-[10px] px-2 py-0.5 rounded-md border font-mono"
+          >
             TypeScript / Python
           </span>
           {isStreaming && (
@@ -221,7 +244,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
         {/* Live Multi-Cursor Presence List */}
         <div className="flex items-center gap-2.5">
-          <span className="text-[#656D76] text-xs flex items-center gap-1.5">
+          <span style={{ color: activeTheme.colors.textMuted }} className="text-xs flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
             You ({currentUser.name})
           </span>

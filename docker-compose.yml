@@ -1,60 +1,90 @@
+version: '3.8'
+
 services:
-
-  postgresql:
-    image: postgres:16-alpine
-    container_name: chronocanvas-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
-      POSTGRES_DB: temporal
+  # 1. Frontend Web Client (Production Nginx Alpine with SPA routing and vendor chunking)
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: chronocanvas-web
+    restart: always
     ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  temporal:
-    image: temporalio/auto-setup:1.25.2
-    container_name: chronocanvas-temporal
-    restart: unless-stopped
+      - "8080:80"
     depends_on:
-      postgresql:
-        condition: service_healthy
-    environment:
-      DB: postgres12
-      DB_PORT: 5432
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: postgresql
-      DEFAULT_NAMESPACE: default
-      DEFAULT_NAMESPACE_RETENTION: 7d
-      TEMPORAL_ADDRESS: 0.0.0.0:7233
-    ports:
-      - "7233:7233"
-    healthcheck:
-      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
+      - server
+    networks:
+      - chronocanvas-net
 
-  temporal-ui:
-    image: temporalio/ui:2.31.2
-    container_name: chronocanvas-temporal-ui
-    restart: unless-stopped
+  # 2. Node.js WebSocket Gateway & Loro CRDT Server
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: chronocanvas-server
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - TEMPORAL_ADDRESS=temporal:7233
+      - NODE_ENV=production
     depends_on:
       - temporal
-    environment:
-      TEMPORAL_ADDRESS: temporal:7233
-      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    networks:
+      - chronocanvas-net
+
+  # 3. Temporal Workflow Engine
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: chronocanvas-temporal
+    restart: always
     ports:
-      - "8080:8080"
+      - "7233:7233"
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+    networks:
+      - chronocanvas-net
+
+  # 4. Temporal Web Dashboard UI
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: chronocanvas-temporal-ui
+    restart: always
+    ports:
+      - "8233:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8233,http://localhost:5173,http://localhost:8080
+    depends_on:
+      - temporal
+    networks:
+      - chronocanvas-net
+
+  # 5. PostgreSQL Backing Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: chronocanvas-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_DB=temporal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - chronocanvas-net
+
+networks:
+  chronocanvas-net:
+    driver: bridge
 
 volumes:
-  postgres_data:
-    driver: local
+  postgres-data:
