@@ -3,6 +3,9 @@ import {
   AgentTaskStatus,
   PeerAwareness,
   SyncMessage,
+  AuthMessage,
+  AuthSuccessMessage,
+  AuthErrorMessage,
 } from "../types/shared";
 
 export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
@@ -19,12 +22,16 @@ export interface LoroSyncOptions {
   url?: string;
   docId?: string;
   peerId?: string;
+  authToken?: string;
+  apiKey?: string;
   autoReconnect?: boolean;
   reconnectIntervalMs?: number;
   onStatusChange?: (status: ConnectionStatus) => void;
   onStatsChange?: (stats: SyncStats) => void;
   onAgentStatusChange?: (status: AgentTaskStatus) => void;
   onRemoteAwareness?: (peer: PeerAwareness) => void;
+  onAuthSuccess?: (msg: AuthSuccessMessage) => void;
+  onAuthError?: (msg: AuthErrorMessage) => void;
 }
 
 function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -51,12 +58,15 @@ export class LoroSyncClient {
   private url: string;
   private docId: string;
   private peerId: string;
+  private authToken: string;
+  private apiKey?: string;
   private ws: WebSocket | null = null;
   private lastVersion: VersionVector | undefined;
   private unsubscribeDoc: (() => void) | null = null;
   private reconnectTimer: any = null;
   private isDestroyed = false;
 
+  public isAuthenticated = false;
   public status: ConnectionStatus = "disconnected";
   public stats: SyncStats = {
     bytesSent: 0,
@@ -73,16 +83,22 @@ export class LoroSyncClient {
     this.url = options.url || "ws://localhost:3001";
     this.docId = options.docId || "chrono-canvas-default";
     this.peerId = options.peerId || `client-${Math.random().toString(36).substring(2, 9)}`;
+    this.authToken = options.authToken || "dev-dummy-token";
+    this.apiKey = options.apiKey;
     this.options = {
       url: this.url,
       docId: this.docId,
       peerId: this.peerId,
+      authToken: this.authToken,
+      apiKey: this.apiKey ?? "",
       autoReconnect: options.autoReconnect ?? true,
       reconnectIntervalMs: options.reconnectIntervalMs ?? 3000,
       onStatusChange: options.onStatusChange || (() => {}),
       onStatsChange: options.onStatsChange || (() => {}),
       onAgentStatusChange: options.onAgentStatusChange || (() => {}),
       onRemoteAwareness: options.onRemoteAwareness || (() => {}),
+      onAuthSuccess: options.onAuthSuccess || (() => {}),
+      onAuthError: options.onAuthError || (() => {}),
     };
 
     // Initialize baseline version vector
@@ -125,7 +141,17 @@ export class LoroSyncClient {
       this.ws.onopen = () => {
         this.setStatus("connected");
 
-        // Send crdt-sync frame (JSON with base64 payload + docId) to register room membership
+        // 1. Immediately transmit AuthMessage with dev bypass token
+        const authPayload: AuthMessage = {
+          type: "auth",
+          token: this.authToken || "dev-dummy-token",
+          ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+        };
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(authPayload));
+        }
+
+        // 2. Send crdt-sync frame (JSON with base64 payload + docId) to register room membership
         const snapshot = this.doc.export({ mode: "snapshot" });
         const syncMsg: SyncMessage = {
           type: "crdt-sync",
@@ -151,7 +177,17 @@ export class LoroSyncClient {
           try {
             const message = JSON.parse(event.data);
 
-            if (message.type === "crdt-sync") {
+            if (message.type === "auth-success") {
+              console.log(`[LoroSync] Authenticated successfully as user: ${message.userId}`);
+              this.isAuthenticated = true;
+              this.options.onAuthSuccess?.(message as AuthSuccessMessage);
+            } else if (message.type === "auth-error") {
+              console.error(
+                `[LoroSync] Authentication error [${message.code || "AUTH_FAILED"}]: ${message.error}`,
+              );
+              this.isAuthenticated = false;
+              this.options.onAuthError?.(message as AuthErrorMessage);
+            } else if (message.type === "crdt-sync") {
               // Ingest CRDT delta broadcasted by server (from human peer or agent worker)
               if (message.payload && typeof message.payload === "string") {
                 const binary = base64ToUint8Array(message.payload);
@@ -183,10 +219,14 @@ export class LoroSyncClient {
         this.setStatus("error");
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (event: CloseEvent) => {
+        this.isAuthenticated = false;
         this.setStatus("disconnected");
         this.ws = null;
-        if (this.options.autoReconnect && !this.isDestroyed) {
+        if (event?.code === 1008) {
+          console.warn("[LoroSync] Connection closed by server due to policy violation (authentication failed).");
+        }
+        if (this.options.autoReconnect && !this.isDestroyed && event?.code !== 1008) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = setTimeout(() => {
             this.connect();

@@ -114,7 +114,7 @@ async function handleAskAi(req: IncomingMessage, res: ServerResponse): Promise<v
     return;
   }
 
-  const { docId, stateBytes } = body as AskAiRequest;
+  const { docId, stateBytes, apiKey } = body as AskAiRequest;
 
   // --- Extract current document text from the client's snapshot bytes ---------
   // The client sends its own Loro snapshot.  We decode it into a headless doc
@@ -157,6 +157,7 @@ async function handleAskAi(req: IncomingMessage, res: ServerResponse): Promise<v
         stateBytes,
         currentDocumentState,
         systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
+        apiKey,
       }],
     });
   } catch (err) {
@@ -203,7 +204,7 @@ async function handleAgentDispatch(req: IncomingMessage, res: ServerResponse): P
     return;
   }
 
-  const { docId, instruction } = body as { docId: string; instruction?: string };
+  const { docId, instruction, apiKey } = body as { docId: string; instruction?: string; apiKey?: string };
   const systemInstruction =
     typeof instruction === 'string' && instruction.trim()
       ? instruction.trim()
@@ -247,7 +248,7 @@ async function handleAgentDispatch(req: IncomingMessage, res: ServerResponse): P
     await client.workflow.start('agentSyncWorkflow', {
       taskQueue: AGENT_TASK_QUEUE,
       workflowId,
-      args: [{ docId, stateBytes, currentDocumentState, systemInstruction }],
+      args: [{ docId, stateBytes, currentDocumentState, systemInstruction, apiKey }],
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

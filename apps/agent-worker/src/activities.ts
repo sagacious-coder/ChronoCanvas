@@ -157,6 +157,7 @@ export interface AgentMutation {
  * @param instruction         - The user's natural-language edit request
  *                              (e.g. "Implement binary search").
  * @param currentDocumentState - Full text of the canvas as a plain string.
+ * @param apiKey               - Optional user BYOK API key (overrides OPENROUTER_API_KEY).
  * @returns A JSON string that deserialises to {@link AgentMutation}.
  *
  * @throws When the LLM returns empty output or invalid JSON — the caller
@@ -165,11 +166,12 @@ export interface AgentMutation {
 export async function generateAgentMutation(
   instruction: string,
   currentDocumentState: string,
+  apiKey?: string,
 ): Promise<string> {
   const ctx = Context.current();
   ctx.heartbeat('generate-mutation:start');
 
-  const openai = getLlmClient();
+  const openai = getLlmClient(apiKey);
   const model  = getLlmModel();
 
   // ---- Pre-compute structural metadata from the live canvas ------------------

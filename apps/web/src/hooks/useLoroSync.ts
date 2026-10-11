@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
-import { AgentTaskStatus, PeerAwareness } from "../types/shared";
+import { AgentTaskStatus, PeerAwareness, AuthSuccessMessage, AuthErrorMessage } from "../types/shared";
 
 export function useLoroSync(
   doc: LoroDoc,
   serverUrl = "ws://localhost:3001",
   docId = "chrono-canvas-default",
-  peerId?: string
+  peerId?: string,
+  authToken = "dev-dummy-token",
+  apiKey?: string,
 ) {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [stats, setStats] = useState<SyncStats>({
     bytesSent: 0,
     bytesReceived: 0,
@@ -30,15 +34,29 @@ export function useLoroSync(
     });
   }, []);
 
+  const handleAuthSuccess = useCallback((_msg: AuthSuccessMessage) => {
+    setIsAuthenticated(true);
+    setAuthError(null);
+  }, []);
+
+  const handleAuthError = useCallback((msg: AuthErrorMessage) => {
+    setIsAuthenticated(false);
+    setAuthError(msg.error);
+  }, []);
+
   useEffect(() => {
     const client = new LoroSyncClient(doc, {
       url: serverUrl,
       docId,
       peerId,
+      authToken,
+      apiKey,
       onStatusChange: setStatus,
       onStatsChange: setStats,
       onAgentStatusChange: setAgentStatus,
       onRemoteAwareness: handleRemoteAwareness,
+      onAuthSuccess: handleAuthSuccess,
+      onAuthError: handleAuthError,
     });
 
     clientRef.current = client;
@@ -48,10 +66,10 @@ export function useLoroSync(
       client.destroy();
       clientRef.current = null;
     };
-  }, [doc, serverUrl, docId, peerId, handleRemoteAwareness]);
+  }, [doc, serverUrl, docId, peerId, authToken, apiKey, handleRemoteAwareness, handleAuthSuccess, handleAuthError]);
 
-  const dispatchAgentTask = useCallback((prompt: string, simulateFailure = false) => {
-    clientRef.current?.dispatchAgentTask(prompt, simulateFailure);
+  const dispatchAgentTask = useCallback((prompt: string, simulateFailure = false, taskApiKey?: string) => {
+    clientRef.current?.dispatchAgentTask(prompt, simulateFailure, taskApiKey);
   }, []);
 
   const clearAgentStatus = useCallback(() => {
@@ -68,6 +86,8 @@ export function useLoroSync(
 
   return {
     status,
+    isAuthenticated,
+    authError,
     stats,
     agentStatus,
     remotePeers,

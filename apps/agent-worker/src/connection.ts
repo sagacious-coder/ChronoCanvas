@@ -30,6 +30,8 @@ const RECONNECT_DELAY_MS = 3_000;
 /** Maximum number of automatic reconnect attempts (0 = unlimited). */
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+const INTERNAL_WORKER_SECRET = process.env.INTERNAL_WORKER_SECRET ?? 'chrono-worker-internal-key';
+
 // ---- BackendSocket ----------------------------------------------------------
 
 /**
@@ -89,12 +91,31 @@ export class BackendSocket {
   }
 
   private _open(): void {
-    const ws = new WebSocket(this.url);
+    let connectUrl = this.url;
+    try {
+      const parsed = new URL(this.url);
+      parsed.searchParams.set('token', INTERNAL_WORKER_SECRET);
+      connectUrl = parsed.toString();
+    } catch {
+      // ignore
+    }
+
+    const ws = new WebSocket(connectUrl, {
+      headers: {
+        'x-worker-secret': INTERNAL_WORKER_SECRET,
+      },
+    });
     this.socket = ws;
 
     ws.on('open', () => {
       console.log(`[BackendSocket:${this.workerId}] connected to ${this.url}`);
       this.reconnectAttempts = 0;
+      // Send auth frame to guarantee authenticated state
+      try {
+        ws.send(JSON.stringify({ type: 'auth', token: INTERNAL_WORKER_SECRET }));
+      } catch {
+        // ignore
+      }
       this.connectResolve?.();
       this.connectResolve = null;
       this.connectReject = null;

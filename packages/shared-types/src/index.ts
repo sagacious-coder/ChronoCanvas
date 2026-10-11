@@ -71,12 +71,43 @@ export interface AwarenessMessage {
   timestamp: number;
 }
 
+export interface AuthMessage {
+  type: 'auth';
+  token: string;
+  apiKey?: string;
+  provider?: 'openai' | 'anthropic' | 'openrouter';
+}
+
+export interface AuthSuccessMessage {
+  type: 'auth-success';
+  userId: string;
+  claims?: Record<string, unknown>;
+}
+
+export interface AuthErrorMessage {
+  type: 'auth-error';
+  error: string;
+  code?: 'UNAUTHORIZED' | 'INVALID_TOKEN' | 'TOKEN_EXPIRED';
+}
+
+export interface JwtPayload {
+  sub: string;
+  exp?: number;
+  iat?: number;
+  role?: string;
+  [key: string]: unknown;
+}
+
 export interface AgentTaskRequest {
   type: 'agent-task-request';
   taskId: string;
   prompt: string;
+  docId?: string;
   targetRange?: { from: number; to: number };
-  docFrontier: string; // Pre-flight checkpoint hash
+  docFrontier?: string; // Pre-flight checkpoint hash
+  apiKey?: string;     // BYOK API key for LLM generation
+  provider?: 'openai' | 'anthropic' | 'openrouter';
+  simulateFailure?: boolean;
 }
 
 export interface AgentTaskStatus {
@@ -97,6 +128,9 @@ export interface AgentTaskStatus {
 }
 
 export type ChronoWebSocketMessage =
+  | AuthMessage
+  | AuthSuccessMessage
+  | AuthErrorMessage
   | SyncMessage
   | AwarenessMessage
   | AgentTaskRequest
@@ -120,6 +154,10 @@ export interface AskAiRequest {
    * Convert from Uint8Array: `Array.from(doc.export({ mode: 'snapshot' }))`.
    */
   stateBytes: number[];
+  /** Optional BYOK API key for LLM generation. */
+  apiKey?: string;
+  /** Optional model provider preference. */
+  provider?: 'openai' | 'anthropic' | 'openrouter';
 }
 
 /** Success response body from `POST /api/ask-ai`. */

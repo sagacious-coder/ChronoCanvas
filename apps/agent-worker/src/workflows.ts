@@ -160,6 +160,8 @@ export interface AgentSyncWorkflowInput {
   systemInstruction?: string;
   /** Task ID for emitting progress updates directly to UI */
   taskId?: string;
+  /** Optional BYOK API key for LLM generation (overrides environment variable). */
+  apiKey?: string;
 }
 
 /** Default instruction when the caller supplies none. */
@@ -228,7 +230,7 @@ export async function agentSyncWorkflow(
         ? `${instruction}\n\nLAST ATTEMPT FAILED WITH:\n${errorFeedback}\nPlease fix the syntax error.`
         : instruction;
       
-      mutationJson = await generateAgentMutationLLM(prompt, documentState);
+      mutationJson = await generateAgentMutationLLM(prompt, documentState, input.apiKey);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       throw ApplicationFailure.nonRetryable(

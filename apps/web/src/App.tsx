@@ -31,6 +31,8 @@ export const App: React.FC = () => {
   // Synchronize WebSocket client with Loro CRDT, Awareness & Temporal Agent signals
   const {
     status,
+    isAuthenticated,
+    authError,
     stats,
     agentStatus,
     remotePeers,
@@ -132,12 +134,21 @@ export const App: React.FC = () => {
   };
 
   const getStatusBadge = () => {
+    if (authError) {
+      return (
+        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#FEE2E2] text-[#B91C1C] border border-[#FECACA] shadow-apple-sm">
+          <span className="w-2 h-2 rounded-full bg-[#EF4444]" />
+          Auth Failed: {authError}
+        </span>
+      );
+    }
+
     switch (status) {
       case "connected":
         return (
           <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-sm">
             <span className="w-2 h-2 rounded-full bg-[#34A853] animate-pulse" />
-            Live WebSocket Connected
+            {isAuthenticated ? "Live & Authenticated (dev bypass)" : "Authenticating..."}
           </span>
         );
       case "connecting":

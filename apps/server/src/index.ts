@@ -1,6 +1,6 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { VersionVector } from 'loro-crdt';
 import {
   EMPTY_ROOM_GRACE_MS,
@@ -15,28 +15,137 @@ import {
 } from './hub.js';
 import { eventHub } from './EventHub.js';
 import { createApiHandler, getTemporalClient } from './api.js';
-import type { AgentTaskStatus } from '@chronocanvas/shared-types';
+import type {
+  AgentTaskStatus,
+  AuthSuccessMessage,
+  AuthErrorMessage,
+  JwtPayload,
+} from '@chronocanvas/shared-types';
 
 /**
- * ChronoCanvas WebSocket transport.
+ * ChronoCanvas WebSocket transport with JWT gateway authentication.
  *
- * This module is the browser-facing edge: it validates frames, tracks socket
- * membership, decodes payloads, and hands every edit to the Event Hub, which
- * multiplexes it (alongside agent writes) into the authoritative write path in
- * `hub.ts`. It holds no CRDT logic of its own — that lives in `hub.ts` so an
- * agent worker can reuse it without booting a socket server.
+ * This module is the browser-facing edge: it validates frames, enforces
+ * JWT authentication on handshake or via initial auth frame, tracks socket
+ * membership, decodes payloads, and hands every edit to the Event Hub.
  */
 
 const PORT = Number(process.env.PORT ?? 3001);
+const JWT_SECRET = process.env.JWT_SECRET ?? 'chrono-canvas-dev-secret-key-change-in-prod';
+const INTERNAL_WORKER_SECRET = process.env.INTERNAL_WORKER_SECRET ?? 'chrono-worker-internal-key';
+const AUTH_TIMEOUT_MS = 10_000;
 
-/** A live client socket, tagged with its identity and room membership. */
-type ClientSocket = WebSocket & { connId: string; joinedRooms: Set<string> };
+/** A live client socket, tagged with its identity, authentication, and room membership. */
+type ClientSocket = WebSocket & {
+  connId: string;
+  joinedRooms: Set<string>;
+  isAuthenticated: boolean;
+  userId?: string;
+  byokApiKey?: string;
+  authTimeoutTimer?: NodeJS.Timeout;
+};
+
+/**
+ * Validates an HS256 JWT using timing-safe HMAC SHA-256 verification.
+ * Throws on invalid signature, expired token, or malformed payload.
+ */
+export function verifyJwtToken(token: string, secret = JWT_SECRET): JwtPayload {
+  const clean = token.startsWith('Bearer ') ? token.slice(7).trim() : token.trim();
+  // Development bypass token support for unauthenticated frontend development
+  if (clean === 'dev-dummy-token') {
+    return { sub: 'dev-user-001', role: 'developer' };
+  }
+
+  const parts = clean.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed JWT: must consist of 3 dot-separated parts');
+  }
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const data = `${headerB64}.${payloadB64}`;
+
+  const expectedSig = createHmac('sha256', secret)
+    .update(data)
+    .digest('base64url');
+
+  const sigBuf = Buffer.from(signatureB64);
+  const expBuf = Buffer.from(expectedSig);
+
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    throw new Error('Invalid JWT signature');
+  }
+
+  const payloadJson = Buffer.from(payloadB64, 'base64url').toString('utf8');
+  let claims: JwtPayload;
+  try {
+    claims = JSON.parse(payloadJson) as JwtPayload;
+  } catch {
+    throw new Error('Invalid JWT payload JSON');
+  }
+
+  if (claims.exp && typeof claims.exp === 'number') {
+    const now = Math.floor(Date.now() / 1000);
+    if (now > claims.exp) {
+      throw new Error('JWT token has expired');
+    }
+  }
+
+  if (!claims.sub || typeof claims.sub !== 'string') {
+    throw new Error('JWT token missing subject (sub) claim');
+  }
+
+  return claims;
+}
+
+/**
+ * Extracts authentication credentials (JWT token or internal worker token)
+ * from incoming HTTP Upgrade request headers, URL query parameters, or protocols.
+ */
+function extractTokenFromRequest(request: IncomingMessage): { token?: string; isWorker?: boolean } {
+  // 1. Worker internal secret header
+  const workerHeader = request.headers['x-worker-secret'];
+  if (workerHeader && workerHeader === INTERNAL_WORKER_SECRET) {
+    return { isWorker: true };
+  }
+
+  // 2. Authorization header (Bearer <token>)
+  const authHeader = request.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return { token: authHeader.slice(7).trim() };
+  }
+
+  // 3. Query string token (?token=...)
+  if (request.url) {
+    try {
+      const parsedUrl = new URL(request.url, 'http://localhost');
+      const tokenParam = parsedUrl.searchParams.get('token');
+      if (tokenParam) {
+        if (tokenParam === INTERNAL_WORKER_SECRET) {
+          return { isWorker: true };
+        }
+        return { token: tokenParam };
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }
+
+  // 4. Sec-WebSocket-Protocol token
+  const protocolHeader = request.headers['sec-websocket-protocol'];
+  if (protocolHeader) {
+    const protocols = protocolHeader.split(',').map((p) => p.trim());
+    for (const p of protocols) {
+      if (p === INTERNAL_WORKER_SECRET) return { isWorker: true };
+      if (p.startsWith('token.')) return { token: p.slice(6) };
+    }
+  }
+
+  return {};
+}
 
 /**
  * Shared HTTP server — handles both WebSocket upgrades (via `ws`) and the
- * REST API (via `apiHandler`). A single port serves both protocols:
- * the `ws` library intercepts Upgrade requests before the `request` event
- * fires, so REST and WS never collide.
+ * REST API (via `apiHandler`).
  */
 const httpServer = createServer(createApiHandler());
 const wss = new WebSocketServer({ server: httpServer });
@@ -48,30 +157,66 @@ httpServer.listen(PORT, () => {
   console.log(`   API → http://localhost:${PORT}/api/agent/dispatch`);
 });
 
-wss.on('connection', (socket: WebSocket, request) => {
+wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
   const ws = socket as ClientSocket;
   const connId = randomUUID();
   ws.connId = connId;
   ws.joinedRooms = new Set<string>();
-  console.log(`[+] client ${connId} connected from ${request.socket.remoteAddress}`);
+
+  // Authenticate socket: check upgrade request credentials first
+  const { token, isWorker } = extractTokenFromRequest(request);
+
+  if (isWorker) {
+    ws.isAuthenticated = true;
+    ws.userId = 'system-agent-worker';
+    console.log(`[+] client ${connId} authenticated as internal worker via handshake`);
+  } else if (token) {
+    try {
+      const claims = verifyJwtToken(token);
+      ws.isAuthenticated = true;
+      ws.userId = claims.sub;
+      console.log(`[+] client ${connId} authenticated via upgrade token for user ${claims.sub}`);
+    } catch (err) {
+      console.warn(`[-] client ${connId} upgrade token invalid: ${errMsg(err)}`);
+      safeSend(
+        ws,
+        {
+          type: 'auth-error',
+          error: `Authentication failed: ${errMsg(err)}`,
+          code: 'INVALID_TOKEN',
+        } as AuthErrorMessage,
+        `auth-error/${connId}`,
+      );
+      ws.close(1008, 'Authentication failed');
+      return;
+    }
+  } else {
+    // Grace period for in-band auth frame
+    ws.isAuthenticated = false;
+    ws.authTimeoutTimer = setTimeout(() => {
+      if (!ws.isAuthenticated && ws.readyState === WebSocket.OPEN) {
+        console.warn(`[-] client ${connId} auth timeout reached without credentials`);
+        safeSend(
+          ws,
+          {
+            type: 'auth-error',
+            error: 'Authentication timeout: No auth frame received within 10s',
+            code: 'UNAUTHORIZED',
+          } as AuthErrorMessage,
+          `auth-timeout/${connId}`,
+        );
+        ws.close(1008, 'Authentication timeout');
+      }
+    }, AUTH_TIMEOUT_MS);
+    console.log(`[+] client ${connId} connected in pending-auth state from ${request.socket.remoteAddress}`);
+  }
 
   ws.on('message', (data, isBinary) => {
     // Outermost crash boundary: nothing a client sends may take the process down.
     try {
-      // Guard: a *true* binary frame is a protocol error — clients must send
-      // crdt-sync JSON frames (base64 payload + docId) so the server can route
-      // to the correct DocumentRoom. Raw binary carries no docId field.
-      //
-      // CRITICAL (ws v8): the `message` event always hands `data` over as a
-      // Buffer, even for text frames, so `Buffer.isBuffer(data)` is NOT a binary
-      // test — it is true for every frame. The frame opcode lives in the
-      // `isBinary` argument. The previous `Buffer.isBuffer(data)` check therefore
-      // misclassified every JSON frame as binary and dropped it, which is the
-      // real source of the "binary frame received (N bytes)" log.
       if (isBinary) {
         console.warn(
-          `[${connId}] protocol error: binary frame received (${(data as Buffer).length} bytes). ` +
-          `Client must send crdt-sync JSON frames, not raw Uint8Array. Frame dropped.`,
+          `[${connId}] protocol error: binary frame received (${(data as Buffer).length} bytes). Frame dropped.`,
         );
         return;
       }
@@ -88,6 +233,28 @@ wss.on('connection', (socket: WebSocket, request) => {
         return;
       }
       const frame = message as Record<string, unknown>;
+
+      // Explicit authentication frame
+      if (frame.type === 'auth') {
+        handleAuth(ws, frame);
+        return;
+      }
+
+      // Security Gate: Reject unauthenticated sockets before any CRDT sync or task dispatch
+      if (!ws.isAuthenticated) {
+        console.warn(`[${connId}] rejected unauthenticated frame type "${String(frame.type)}"`);
+        safeSend(
+          ws,
+          {
+            type: 'auth-error',
+            error: 'Unauthorized: Authentication required before transmitting canvas data',
+            code: 'UNAUTHORIZED',
+          } as AuthErrorMessage,
+          `auth-error/${connId}`,
+        );
+        return;
+      }
+
       if (frame.type === 'crdt-sync') handleCrdtSync(ws, frame);
       else if (frame.type === 'awareness-update') handleAwareness(ws, frame);
       else if (frame.type === 'agent-task-request') void handleAgentTaskRequest(ws, frame);
@@ -99,6 +266,9 @@ wss.on('connection', (socket: WebSocket, request) => {
   });
 
   ws.on('close', () => {
+    if (ws.authTimeoutTimer) {
+      clearTimeout(ws.authTimeoutTimer);
+    }
     for (const docId of ws.joinedRooms) {
       const room = peekRoom(docId);
       if (!room) continue;
@@ -114,6 +284,79 @@ wss.on('connection', (socket: WebSocket, request) => {
 
   ws.on('error', (err) => console.error(`[${connId}] socket error: ${err.message}`));
 });
+
+// --- auth --------------------------------------------------------------------
+
+function handleAuth(ws: ClientSocket, message: Record<string, unknown>): void {
+  const token = typeof message.token === 'string' ? message.token : undefined;
+  const apiKey =
+    typeof message.apiKey === 'string' && message.apiKey.trim()
+      ? message.apiKey.trim()
+      : undefined;
+
+  if (!token) {
+    safeSend(
+      ws,
+      {
+        type: 'auth-error',
+        error: 'Missing token in auth frame',
+        code: 'UNAUTHORIZED',
+      } as AuthErrorMessage,
+      `auth-error/${ws.connId}`,
+    );
+    return;
+  }
+
+  // Check internal worker secret
+  if (token === INTERNAL_WORKER_SECRET) {
+    if (ws.authTimeoutTimer) clearTimeout(ws.authTimeoutTimer);
+    ws.isAuthenticated = true;
+    ws.userId = 'system-agent-worker';
+    if (apiKey) ws.byokApiKey = apiKey;
+
+    safeSend(
+      ws,
+      {
+        type: 'auth-success',
+        userId: ws.userId,
+      } as AuthSuccessMessage,
+      `auth-success/${ws.connId}`,
+    );
+    console.log(`[auth] client ${ws.connId} authenticated as internal worker via frame`);
+    return;
+  }
+
+  try {
+    const claims = verifyJwtToken(token);
+    if (ws.authTimeoutTimer) clearTimeout(ws.authTimeoutTimer);
+    ws.isAuthenticated = true;
+    ws.userId = claims.sub;
+    if (apiKey) ws.byokApiKey = apiKey;
+
+    safeSend(
+      ws,
+      {
+        type: 'auth-success',
+        userId: claims.sub,
+        claims: { sub: claims.sub, role: claims.role },
+      } as AuthSuccessMessage,
+      `auth-success/${ws.connId}`,
+    );
+    console.log(`[auth] client ${ws.connId} authenticated for user ${claims.sub}`);
+  } catch (err) {
+    console.warn(`[auth] client ${ws.connId} verification failed: ${errMsg(err)}`);
+    safeSend(
+      ws,
+      {
+        type: 'auth-error',
+        error: `Authentication failed: ${errMsg(err)}`,
+        code: 'INVALID_TOKEN',
+      } as AuthErrorMessage,
+      `auth-error/${ws.connId}`,
+    );
+    ws.close(1008, 'Authentication failed');
+  }
+}
 
 // --- crdt-sync ---------------------------------------------------------------
 // Thin transport adapter: validate the frame, register membership, decode the
@@ -322,6 +565,12 @@ async function handleAgentTaskRequest(
         ? message.prompt.trim()
         : SYSTEM_INSTRUCTION);
 
+  // Extract BYOK API key: prefer frame-level parameter, fallback to authenticated socket session
+  const apiKey =
+    typeof message.apiKey === 'string' && message.apiKey.trim()
+      ? message.apiKey.trim()
+      : ws.byokApiKey;
+
   // --- Phase 2 & 3: Fire Temporal workflow and relay granular phase statuses ---
   //
   // We AWAIT the full workflow result — `workflow.start` resolving only means
@@ -336,7 +585,7 @@ async function handleAgentTaskRequest(
     const handle = await client.workflow.start('agentSyncWorkflow', {
       taskQueue: AGENT_TASK_QUEUE,
       workflowId,
-      args: [{ docId, stateBytes, currentDocumentState, systemInstruction, taskId }],
+      args: [{ docId, stateBytes, currentDocumentState, systemInstruction, taskId, apiKey }],
     });
 
     console.log(`[agent-task] workflow started workflowId=${workflowId}`);

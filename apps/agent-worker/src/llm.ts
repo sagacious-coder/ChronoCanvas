@@ -53,27 +53,43 @@ export function getLlmModel(): string {
 let _client: OpenAI | null = null;
 
 /**
- * Return the process-wide OpenAI client, constructing it on first call.
+ * Return an OpenAI client instance.
  *
- * The client is pointed at OpenRouter's OpenAI-compatible endpoint so the same
- * `openai` SDK drives any model available on the router.
+ * If a `dynamicApiKey` is provided (e.g. user BYOK key), constructs a dedicated
+ * client using that key without mutating the process singleton.
+ * Otherwise, falls back to the process-wide singleton using OPENROUTER_API_KEY.
  *
- * @throws {Error} when `OPENROUTER_API_KEY` is absent — gives the operator a
- *   clear, actionable message rather than a cryptic 401 from the API.
+ * @throws {Error} when neither dynamicApiKey nor OPENROUTER_API_KEY is present.
  */
-export function getLlmClient(): OpenAI {
+export function getLlmClient(dynamicApiKey?: string): OpenAI {
+  const key = dynamicApiKey?.trim();
+  if (key) {
+    // If user provided a direct OpenAI key vs OpenRouter key, point to respective gateway
+    const isDirectOpenAi = key.startsWith('sk-') && !key.startsWith('sk-or-');
+    const baseURL = process.env.OPENROUTER_BASE_URL ?? (isDirectOpenAi ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1');
+
+    return new OpenAI({
+      apiKey: key,
+      baseURL,
+      defaultHeaders: {
+        'HTTP-Referer': 'https://github.com/ChronoCanvas/chrono-canvas',
+        'X-Title':      'ChronoCanvas Agent Worker (BYOK)',
+      },
+    });
+  }
+
   if (_client) return _client;
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
+  const envApiKey = process.env.OPENROUTER_API_KEY;
+  if (!envApiKey) {
     throw new Error(
-      '[llm] OPENROUTER_API_KEY is not set.  ' +
-      'Add it to apps/agent-worker/.env or export it as a shell variable.',
+      '[llm] OPENROUTER_API_KEY is not set and no BYOK dynamic API key was provided. ' +
+      'Add OPENROUTER_API_KEY to apps/agent-worker/.env or provide a user API key.',
     );
   }
 
   _client = new OpenAI({
-    apiKey,
+    apiKey: envApiKey,
     baseURL: process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
     defaultHeaders: {
       // OpenRouter attribution headers (optional but recommended by the docs).
