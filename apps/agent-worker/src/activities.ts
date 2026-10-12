@@ -27,6 +27,10 @@
  *   - `CHRONO_WORKER_ID`      — stable worker id stamped on the AgentSyncEnvelope.
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 import { Context, ApplicationFailure } from '@temporalio/activity';
 import { LoroDoc } from 'loro-crdt';
 import type { LoroCheckpoint, FrontierEntry, AgentSyncEnvelope } from './types';
@@ -99,44 +103,52 @@ export async function captureCheckpoint(
 
   ctx.heartbeat('reading-frontiers');
 
-  // `doc.frontiers()` returns `Array<{ peer: bigint; counter: number }>`.
-  // The peer ID is a BigInt and is not JSON-serialisable; normalise to string.
+  // `doc.frontiers()` returns { peer: bigint; counter: number }[]
   const rawFrontiers = doc.frontiers();
-  const frontiers: FrontierEntry[] = rawFrontiers.map((f) => ({
-    peer: encodePeer(f.peer as unknown as bigint),
-    counter: f.counter,
-  }));
 
   const checkpoint: LoroCheckpoint = {
     capturedAt: new Date().toISOString(),
     docId,
-    frontiers,
+    frontiers: rawFrontiers.map(f => ({
+      peer: encodePeer(f.peer),
+      counter: f.counter,
+    })),
   };
+
+  ctx.heartbeat('checkpoint-captured');
+
+  console.log(
+    `[captureCheckpoint] docId="${docId}" ` +
+    `frontiers=${checkpoint.frontiers.length} ` +
+    `peers=[${checkpoint.frontiers.map(f => `${f.peer}:${f.counter}`).join(', ')}]`,
+  );
 
   return JSON.stringify(checkpoint);
 }
 
-// ---- LLM helpers ------------------------------------------------------------
+// ---- Helper: Uint8Array -> base64 (browser/node portable) -------------------
 
-/** Base64-encode a Uint8Array for the AgentSyncEnvelope payload field. */
-const toB64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
+function toB64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
 
-// ---- Structured mutation type -----------------------------------------------
+// ---- AgentMutation Contract -------------------------------------------------
 
 /**
- * The JSON schema the LLM must produce for {@link generateAgentMutation}.
+ * Structured mutation returned by {@link generateAgentMutation}.
  *
- * The agent evaluates the `currentDocumentState`, decides *where* to edit, and
- * returns this shape — never free-form prose, never markdown fences.
+ * Designed to make the LLM output *deterministic, structured edits* rather than
+ * free-form code blobs.  The prompt in Stage 4 instructs the model that it MUST
+ * always return this shape — never free-form prose, never markdown fences.
  *
- * @field operation  - `'insert'` adds text at position; `'replace'` removes a
- *                    range and replaces it; `'append'` adds text at the end.
- * @field position   - 0-based character offset (required for insert/replace).
+ * @field operation   - `'insert'` adds text at position; `'replace'` removes a
+ *                     range and replaces it; `'append'` adds text at the end.
+ * @field position    - 0-based character offset (required for insert/replace).
  * @field deleteCount - number of characters to remove before inserting
- *                    `content` (required when operation is `'replace'`).
- * @field content    - the exact text to write; must NOT contain markdown fences,
- *                    triple-backticks, or commentary.
- * @field rationale  - one sentence explaining why this edit was chosen.
+ *                     `content` (required when operation is `'replace'`).
+ * @field content     - the exact text to write; must NOT contain markdown fences,
+ *                     triple-backticks, or commentary.
+ * @field rationale   - one sentence explaining why this edit was chosen.
  */
 export interface AgentMutation {
   operation: 'insert' | 'replace' | 'append';
@@ -161,10 +173,12 @@ export interface AgentMutation {
  * retried independently (the Temporal retry policy on the proxy that calls it
  * applies here) without risking a double-write to Loro.
  *
- * @param instruction         - The user's natural-language edit request
- *                              (e.g. "Implement binary search").
+ * @param instruction          - The user's natural-language edit request
+ *                               (e.g. "Implement binary search").
  * @param currentDocumentState - Full text of the canvas as a plain string.
- * @param apiKey               - Optional user BYOK API key (overrides OPENROUTER_API_KEY).
+ * @param apiKey                - Optional user BYOK API key (overrides OPENROUTER_API_KEY).
+ * @param taskId               - Optional task ID for status emissions.
+ * @param docId                - Optional document ID.
  * @returns A JSON string that deserialises to {@link AgentMutation}.
  *
  * @throws When the LLM returns empty output or invalid JSON — the caller
@@ -174,21 +188,26 @@ export async function generateAgentMutation(
   instruction: string,
   currentDocumentState: string,
   apiKey?: string,
+  taskId?: string,
+  docId?: string,
 ): Promise<string> {
   const ctx = Context.current();
   ctx.heartbeat('generate-mutation:start');
 
+  const workerId = process.env.CHRONO_WORKER_ID ?? 'agent-worker';
+  const socket = getBackendSocket(workerId);
+  if (!socket.isConnected) {
+    try {
+      await socket.connect();
+    } catch (connErr) {
+      console.warn(`[generateAgentMutation] socket connect warning:`, connErr);
+    }
+  }
+
   const openai = getLlmClient(apiKey);
-  const model  = getLlmModel();
+  const model = getLlmModel();
 
   // ---- Pre-compute structural metadata from the live canvas ------------------
-  //
-  // Metadata is embedded in the USER message (not the system prompt) because
-  // many OpenRouter models silently truncate or ignore system prompt content
-  // when `response_format: { type: 'json_object' }` is active, especially when
-  // the system prompt contains triple-backtick fenced blocks.  Moving the
-  // canvas text to the user turn guarantees the model sees it.
-
   const docLength = currentDocumentState.length;
   const lineCount = currentDocumentState ? currentDocumentState.split('\n').length : 0;
 
@@ -209,42 +228,30 @@ export async function generateAgentMutation(
   const lastLineOffset = lastNewline === -1 ? 0 : lastNewline + 1;
 
   // ---- System prompt: schema + output rules only (keep short) -----------------
-  //
-  // IMPORTANT: Do NOT embed the canvas text here. When response_format is
-  // json_object, several hosted models (including those on OpenRouter) silently
-  // drop content in system prompts that contain backtick-fenced code blocks or
-  // exceed ~2 KB.  The canvas is delivered in the user message instead.
-  const systemPrompt = `You are an expert autonomous code editor. Your ONLY output must be a single raw JSON object — no markdown, no backticks, no prose.
+  const systemPrompt = `You are an expert autonomous code editor.
+Your output MUST be a single raw JSON object representing an edit — no markdown, no backticks, no prose.
 
-You will receive the CURRENT CANVAS STATE and a user INSTRUCTION in the next message.
-
-OPERATIONS:
-- "append"  → add content after the last character. No position needed.
-- "insert"  → insert content at 0-based character index "position". Requires "position".
-- "replace" → delete "deleteCount" chars from "position", then insert content. Requires "position" and "deleteCount".
-
-OUTPUT SCHEMA (no extra keys, no omitted keys):
+JSON SCHEMA:
 {
-  "operation": "append" | "insert" | "replace",
-  "position": <number, required for insert/replace>,
-  "deleteCount": <number, required for replace>,
-  "content": "<exact code to write>",
-  "rationale": "<one sentence>"
+  "content": string,       // [REQUIRED FIRST KEY] The raw text/code to insert or replace. NEVER wrap in markdown code blocks.
+  "operation": string,     // [REQUIRED] "insert" | "replace" | "append"
+  "position": number,      // Required for "insert" and "replace": 0-based character offset
+  "deleteCount": number,   // Required for "replace": how many characters to remove starting from position
+  "rationale": string      // [REQUIRED] One sentence explaining the edit
 }
 
-RULES:
-1. If the canvas already has code, analyse it and make a TARGETED edit — never treat a non-empty canvas as empty.
-2. STRICT RULE: If the instruction targets a function that has an empty stub in the metadata, you MUST use "replace" with the exact position and length provided to overwrite the stub. Do NOT use "append" which would create a duplicate definition.
-3. Prefer "append" for new top-level additions ONLY when no stub exists.
-4. Match the language of the existing code. You MUST write code in the EXACT SAME LANGUAGE as the provided canvas. Do NOT write Python if the canvas is JavaScript.
-5. Output ONLY the JSON object. Anything else will cause a fatal parse error.`;
+CRITICAL RULES:
+1. ALWAYS output "content" as the very first key of the JSON object.
+2. NEVER include markdown code fences (\`\`\`) inside the content string. Output pure code.
+3. Choose the operation that MINIMISES the edit size:
+   - "append"  : add new code at the very end of the file.
+   - "replace" : fill an empty function stub or replace an existing block.
+   - "insert"  : insert imports at position 0, or add code at a specific offset.
+4. "deleteCount" is ONLY valid with "replace". Do NOT include it for "append" or "insert".
+5. Do NOT rewrite the whole file when adding a function — use "append" or targeted "insert".
+6. The output MUST be parseable by JSON.parse. Escape newlines as \\n and double-quotes as \\".`;
 
   // ---- User message: carry the full canvas context --------------------------
-  //
-  // The document state lives here so it passes through response_format:json_object
-  // reliably. The structural metadata (char count, stub positions) is pre-computed
-  // above and listed explicitly so the model can pick exact positions without
-  // mentally scanning the full text.
   let userMessage: string;
   if (currentDocumentState.length > 0) {
     const stubInfo = stubs.length > 0
@@ -266,7 +273,7 @@ RULES:
       currentDocumentState,
       '---',
       '',
-      'Now output the JSON edit object.',
+      'Now output the JSON edit object with "content" as the first key.',
     ].join('\n');
   } else {
     userMessage = [
@@ -274,7 +281,7 @@ RULES:
       '',
       'CURRENT CANVAS STATE: (empty — use "append" to write the initial content)',
       '',
-      'Now output the JSON edit object.',
+      'Now output the JSON edit object with "content" as the first key.',
     ].join('\n');
   }
 
@@ -282,12 +289,11 @@ RULES:
     `[generateAgentMutation] canvas snapshot: ${docLength} chars, ${lineCount} lines, ${stubs.length} stubs`,
   );
 
-
   ctx.heartbeat('generate-mutation:calling-llm');
 
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user',   content: userMessage  },
+    { role: 'user', content: userMessage },
   ];
 
   console.log("=== FINAL MESSAGES PAYLOAD ===", JSON.stringify(messages, null, 2));
@@ -427,12 +433,12 @@ export async function generateAndInjectResponse(
   //
   // `checkpointJson` was produced by `captureCheckpoint`, which normalised
   // bigint peer IDs to decimal strings via `encodePeer`.  Loro's `PeerID` type
-  // is defined as `\`${number}\`` — a decimal string — so `FrontierEntry.peer`
+  // is defined as `${number}` — a decimal string — so `FrontierEntry.peer`
   // is already the correct shape; we cast it directly without any BigInt
   // conversion.
   //
   // Loro checkout signature: `checkout(frontiers: { peer: PeerID; counter: number }[])`
-  // where `type PeerID = \`${number}\`` (loro-crdt/*/loro_wasm.d.ts, line 69).
+  // where `type PeerID = `${number}`` (loro-crdt/*/loro_wasm.d.ts, line 69).
   let savedFrontiers: { peer: `${number}`; counter: number }[];
   try {
     const checkpoint: LoroCheckpoint = JSON.parse(checkpointJson) as LoroCheckpoint;
@@ -658,11 +664,6 @@ export async function emitTaskStatus(taskId: string, status: string, errorTrace?
 
 // ---- Verify Syntax ----------------------------------------------------------
 
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { execSync } from 'node:child_process';
-
 /**
  * Sandboxed testing activity — applies the mutation to a local headless Loro doc,
  * writes the resulting code to a temp file, and verifies it with uv run python.
@@ -689,20 +690,23 @@ export async function verifyMutationSyntax(
   const currentText = textContainer.toString();
 
   switch (mutation.operation) {
-    case 'insert':
+    case 'insert': {
       textContainer.insert(Math.min(mutation.position ?? docLength, docLength), mutation.content);
       break;
-    case 'replace':
+    }
+    case 'replace': {
       const pos = Math.min(mutation.position ?? 0, docLength);
       const del = Math.min(mutation.deleteCount ?? 0, docLength - pos);
       if (del > 0) textContainer.delete(pos, del);
       textContainer.insert(pos, mutation.content);
       break;
+    }
     case 'append':
-    default:
+    default: {
       const prefix = currentText.length > 0 ? '\n' : '';
       textContainer.insert(docLength, prefix + mutation.content);
       break;
+    }
   }
 
   const generatedCode = textContainer.toString();
@@ -714,7 +718,7 @@ export async function verifyMutationSyntax(
   try {
     // Run syntax check
     // Ensure we use uv for testing as per requirements
-    execSync(`uv run python -m py_compile ${tempFile}`, { stdio: 'pipe' });
+    execSync(`uv run python -m py_compile "${tempFile}"`, { stdio: 'pipe' });
   } catch (err: any) {
     // The command failed, return the stderr for the LLM
     const stderr = err.stderr ? err.stderr.toString() : err.message;
@@ -727,4 +731,3 @@ export async function verifyMutationSyntax(
     }
   }
 }
-
