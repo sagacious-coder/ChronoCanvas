@@ -26,9 +26,9 @@ import { getBackendSocket } from './connection';
 
 // ---- Config -----------------------------------------------------------------
 
-const TEMPORAL_ADDRESS   = process.env.TEMPORAL_ADDRESS    ?? 'localhost:7233';
-const TEMPORAL_NAMESPACE = process.env.TEMPORAL_NAMESPACE  ?? 'default';
-const TASK_QUEUE         = process.env.TEMPORAL_TASK_QUEUE ?? 'agent-queue';
+const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? 'localhost:7233';
+const TEMPORAL_NAMESPACE = process.env.TEMPORAL_NAMESPACE ?? 'default';
+const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? 'agent-queue';
 
 // ---- Bootstrap --------------------------------------------------------------
 
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     worker.shutdown();
   };
 
-  process.once('SIGINT',  () => void shutdown('SIGINT'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
   // --------------------------------------------------------------------------
