@@ -1,12 +1,18 @@
 import React, { useState } from "react";
-import { AgentTaskStatus } from "../types/shared";
+import { AgentTaskStatus, ByokConfig } from "../types/shared";
 
 interface AgentControlPanelProps {
-  onTriggerTask: (prompt: string, simulateFailure?: boolean) => void;
+  onTriggerTask: (
+    prompt: string,
+    simulateFailure?: boolean,
+    failureType?: "syntax" | "assertion",
+    enableSelfHealing?: boolean
+  ) => void;
   onClearStatus?: () => void;
   currentStatus: AgentTaskStatus | null;
   currentFrontier: string;
   isConnecting?: boolean;
+  byokConfig?: ByokConfig;
 }
 
 export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
@@ -15,6 +21,7 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
   currentStatus,
   currentFrontier,
   isConnecting = false,
+  byokConfig,
 }) => {
   const [prompt, setPrompt] = useState("");
 
@@ -28,7 +35,7 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
   };
 
   const handleSimulateRollback = () => {
-    onTriggerTask("Test autonomous error handling and instant rollback", true);
+    onTriggerTask("Test autonomous error handling and instant rollback", true, "syntax", false);
   };
 
   const handleSimulateSelfHealing = () => {
@@ -64,7 +71,7 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#F5F3FF] text-[#6D28D9] border border-[#DDD6FE]">
             <span className="w-2 h-2 rounded-full bg-[#7C3AED] animate-spin" />
-            Thinking... ({currentStatus.tokenCount || 0} tokens)
+            Generating in Scratchpad ({currentStatus.tokenCount || 0} tokens)...
           </span>
         );
       case "injecting":
@@ -78,14 +85,16 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]">
             <span className="w-2 h-2 rounded-full bg-[#D97706] animate-bounce" />
-            astral-sh/uv: Sandbox Testing (&lt;50ms)...
+            astral-sh/uv: Pre-Flight Testing (&lt;50ms)...
           </span>
         );
       case "self-healing":
         return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA]">
-            <span className="w-2 h-2 rounded-full bg-[#EF4444] animate-pulse" />
-            Syntax Error Caught: Healing...
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#F5F3FF] text-[#6D28D9] border border-[#DDD6FE] animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-[#7C3AED] animate-spin" />
+            {currentStatus.failureType === "syntax"
+              ? "Syntax Error Caught: Healing..."
+              : "Temporal Self-Healing: Re-injecting Traceback..."}
           </span>
         );
       case "committed":
@@ -94,7 +103,9 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6]">
               <span className="w-2 h-2 rounded-full bg-[#137333]" />
-              Verified & Completed
+              {currentStatus.healedSuccessfully
+                ? "Milestone 3 Verified: Auto-Healed & Merged"
+                : "Pre-Flight Verified • Broadcast to Canvas"}
             </span>
             {onClearStatus && (
               <button
@@ -111,10 +122,9 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
       case "rolled-back":
         return (
           <div className="flex items-center gap-2">
-            {/* Positive Green Revert State per explicit feedback */}
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6]">
               <span className="w-2 h-2 rounded-full bg-[#137333]" />
-              Rollback Executed: Clean State Restored
+              Mutation Blocked &bull; Canvas State Protected
             </span>
             {onClearStatus && (
               <button
@@ -160,8 +170,15 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
             AI
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-[#1F2328]">Temporal Agent Workflow Controller</h2>
-            <p className="text-[11px] text-[#656D76]">Durable Checkpoint Orchestration &bull; Isolated Sandbox Testing</p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-[#1F2328]">Temporal Agent Workflow Controller</h2>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-[#E2DCCF] bg-[#EFEAD9] text-[#4B515D]">
+                {byokConfig?.enabled ? `BYOK: ${byokConfig.model}` : "Managed: Claude 3.5"}
+              </span>
+            </div>
+            <p className="text-[11px] text-[#656D76]">
+              Durable Checkpoint Orchestration &bull; Isolated Sandbox Testing &bull; Prompt Caching Enabled
+            </p>
           </div>
         </div>
 
@@ -182,12 +199,18 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
           type="text"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Instruct the autonomous agent (e.g., 'Implement binary search with type hints')..."
+          placeholder={
+            byokConfig?.enabled
+              ? `Instruct autonomous agent via ${byokConfig.model}...`
+              : "Instruct the autonomous agent (e.g., 'Implement binary search with type hints')..."
+          }
           disabled={Boolean(
             isConnecting ||
-            (currentStatus &&
-              currentStatus.status !== "committed" &&
-              currentStatus.status !== "rolled-back")
+              (currentStatus &&
+                currentStatus.status !== "committed" &&
+                currentStatus.status !== "completed" &&
+                currentStatus.status !== "rolled-back" &&
+                currentStatus.status !== "failed")
           )}
           className="flex-1 w-full bg-[#FFFFFF] border border-[#E6E2D8] rounded-xl px-4 py-2 text-xs text-[#1F2328] placeholder-[#8C959F] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:opacity-50 transition shadow-apple-sm"
         />

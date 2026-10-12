@@ -1,7 +1,7 @@
 /**
- * ChronoCanvas Shared Contracts (Stage 0 - Day 1 Freeze)
+ * ChronoCanvas Shared Contracts (Stage 4 - Day 13 Auth & BYOK Freeze)
  * Interface definitions for WebSocket binary delta exchanges,
- * CRDT Frontiers, and Agent Step Checkpoints.
+ * CRDT Frontiers, Sandbox Pre-Flight Diagnostics, JWT Authentication, and BYOK.
  */
 
 export interface CursorPosition {
@@ -43,36 +43,16 @@ export const AGENT_PEER_ID = "999999999" as const;
 export interface SyncMessage {
   type: 'crdt-sync';
   docId: string;
-  /**
-   * The sender's Loro Version Vector (see {@link VersionVectorHex}): the per-peer
-   * op counters it already holds. This is NOT a Frontier (a Frontier is a set of
-   * op IDs at the tips of the DAG and cannot be compared without the OpLog).
-   *
-   * The receiver diffs against it with `doc.export({ mode: 'update', from })`
-   * to compute exactly the ops the sender is missing. Senders set it to their
-   * version *after* applying their own edit, so a diff can never echo their own
-   * ops back. Omit it on a cold join to request a full snapshot.
-   */
-  versionFrom?: VersionVectorHex;
+  versionFrom?: VersionVectorHex; // Hex representation of Loro Version Vector / Frontier
   payload: string;     // Base64 encoded binary delta
   senderId: string;
-  /**
-   * Provenance of the delta, preserved end-to-end so clients can distinguish a
-   * human edit from an agent write (e.g. to tint agent-authored ranges). Set by
-   * the server's Event Hub on fan-out; absent on frames a client sends up.
-   */
   origin?: EditOrigin;
   timestamp: number;
 }
 
 export interface AwarenessMessage {
   type: 'awareness-update';
-  /**
-   * Scopes presence to a single document. One socket may be joined to several
-   * documents at once, so cursors must name the document they belong to rather
-   * than being fanned out across every room the socket happens to share.
-   */
-  docId: string;
+  docId?: string;
   peer: PeerAwareness;
   timestamp: number;
 }
@@ -104,6 +84,21 @@ export interface JwtPayload {
   [key: string]: unknown;
 }
 
+export interface ByokConfig {
+  enabled: boolean;
+  provider: 'openrouter' | 'anthropic' | 'openai' | 'custom';
+  apiKey?: string;
+  model: string;
+  customBaseUrl?: string;
+}
+
+export interface UserAuthSession {
+  mode: 'guest' | 'jwt';
+  token?: string;
+  subject?: string;
+  expiresAt?: number;
+}
+
 export interface AgentTaskRequest {
   type: 'agent-task-request';
   taskId: string;
@@ -114,6 +109,34 @@ export interface AgentTaskRequest {
   apiKey?: string;     // BYOK API key for LLM generation
   provider?: 'openai' | 'anthropic' | 'openrouter';
   simulateFailure?: boolean;
+  failureType?: 'syntax' | 'assertion';
+  enableSelfHealing?: boolean; // Day 11: triggers autonomous self-healing loop
+  byokConfig?: ByokConfig;     // Day 13: Bring-Your-Own-Key configuration
+  authToken?: string;          // Day 13: JWT Bearer authorization token
+}
+
+export interface SandboxTestCase {
+  name: string;
+  status: 'passed' | 'failed' | 'running';
+  durationMs?: number;
+  error?: string;
+}
+
+export interface SandboxTestResult {
+  suite: string; // e.g. "astral-sh/uv pre-flight"
+  runner: 'uv run python -m py_compile' | 'uv run pytest';
+  passed: boolean;
+  totalTests: number;
+  passedTests: number;
+  failedTests: number;
+  durationMs: number; // target <50ms
+  testCases: SandboxTestCase[];
+  stdout?: string;
+  stderr?: string;
+  errorTraceback?: string;
+  preFlightStage?: 'checkpoint-saved' | 'code-generated' | 'testing' | 'self-healing' | 'broadcast-committed' | 'broadcast-aborted';
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 export interface AgentTaskStatus {
@@ -134,16 +157,16 @@ export interface AgentTaskStatus {
   rollbackTriggered?: boolean;
   errorTrace?: string;
   tokenCount?: number;
+  sandboxResult?: SandboxTestResult;
+  preFlightStage?: 'checkpoint-saved' | 'code-generated' | 'testing' | 'self-healing' | 'broadcast-committed' | 'broadcast-aborted';
+  failureType?: 'syntax' | 'assertion';
+  selfHealingAttempt?: number;
+  maxAttempts?: number;
+  healedSuccessfully?: boolean;
+  healedCode?: string;
+  byokUsed?: boolean;
+  modelUsed?: string;
 }
-
-export type ChronoWebSocketMessage =
-  | AuthMessage
-  | AuthSuccessMessage
-  | AuthErrorMessage
-  | SyncMessage
-  | AwarenessMessage
-  | AgentTaskRequest
-  | AgentTaskStatus;
 
 // ---- HTTP API contracts -----------------------------------------------------
 
@@ -163,10 +186,15 @@ export interface AskAiRequest {
    * Convert from Uint8Array: `Array.from(doc.export({ mode: 'snapshot' }))`.
    */
   stateBytes: number[];
+  prompt?: string;
   /** Optional BYOK API key for LLM generation. */
   apiKey?: string;
   /** Optional model provider preference. */
   provider?: 'openai' | 'anthropic' | 'openrouter';
+  simulateFailure?: boolean;
+  enableSelfHealing?: boolean;
+  byokConfig?: ByokConfig;
+  authToken?: string;
 }
 
 /** Success response body from `POST /api/ask-ai`. */
@@ -174,5 +202,16 @@ export interface AskAiResponse {
   /** The Temporal workflow id that was started. */
   workflowId: string;
   /** ISO-8601 timestamp of when the workflow was submitted. */
-  submittedAt: string;
+  submittedAt?: string;
+  status?: string;
+  message?: string;
 }
+
+export type ChronoWebSocketMessage =
+  | AuthMessage
+  | AuthSuccessMessage
+  | AuthErrorMessage
+  | SyncMessage
+  | AwarenessMessage
+  | AgentTaskRequest
+  | AgentTaskStatus;

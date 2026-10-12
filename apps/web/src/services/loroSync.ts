@@ -6,6 +6,7 @@ import {
   AuthMessage,
   AuthSuccessMessage,
   AuthErrorMessage,
+  ByokConfig,
 } from "../types/shared";
 
 export type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
@@ -45,25 +46,26 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const len = binary.length;
+  const binaryString = atob(base64);
+  const len = binaryString.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
+    bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
 }
 
 export class LoroSyncClient {
   private doc: LoroDoc;
+  private ws: WebSocket | null = null;
+  private options: Required<LoroSyncOptions>;
   private url: string;
-  private docId: string;
-  private peerId: string;
+  public readonly docId: string;
+  public readonly peerId: string;
   private authToken: string;
   private apiKey?: string;
   private provider?: "openai" | "anthropic" | "openrouter";
-  private ws: WebSocket | null = null;
-  private lastVersion: VersionVector | undefined;
+  private lastVersion: VersionVector | null = null;
   private unsubscribeDoc: (() => void) | null = null;
   private reconnectTimer: any = null;
   private agentStatusResetTimer: any = null;
@@ -79,16 +81,15 @@ export class LoroSyncClient {
     lastSyncAt: null,
   };
 
-  private options: Required<LoroSyncOptions>;
-
   constructor(doc: LoroDoc, options: LoroSyncOptions = {}) {
     this.doc = doc;
-    this.url = options.url || "ws://localhost:3001";
     this.docId = options.docId || "chrono-canvas-default";
-    this.peerId = options.peerId || `client-${Math.random().toString(36).substring(2, 9)}`;
+    this.peerId = options.peerId || doc.peerIdStr || `client-${Math.random().toString(36).substring(2, 9)}`;
+    this.url = options.url || "ws://localhost:3001";
     this.authToken = options.authToken || "dev-dummy-token";
     this.apiKey = options.apiKey;
     this.provider = options.provider;
+
     this.options = {
       url: this.url,
       docId: this.docId,
@@ -97,7 +98,7 @@ export class LoroSyncClient {
       apiKey: this.apiKey ?? "",
       provider: this.provider ?? "openrouter",
       autoReconnect: options.autoReconnect ?? true,
-      reconnectIntervalMs: options.reconnectIntervalMs ?? 3000,
+      reconnectIntervalMs: options.reconnectIntervalMs || 2000,
       onStatusChange: options.onStatusChange || (() => {}),
       onStatsChange: options.onStatsChange || (() => {}),
       onAgentStatusChange: options.onAgentStatusChange || (() => {}),
@@ -115,12 +116,29 @@ export class LoroSyncClient {
     this.authToken = authToken;
     this.apiKey = apiKey;
     this.provider = provider;
+    this.options.authToken = authToken;
+    if (apiKey !== undefined) this.options.apiKey = apiKey;
+    if (provider !== undefined) this.options.provider = provider;
   }
 
-  private setStatus(status: ConnectionStatus) {
-    if (this.status === status) return;
-    this.status = status;
-    this.options.onStatusChange(status);
+  public updateCredentials(authToken: string, apiKey?: string, provider?: "openai" | "anthropic" | "openrouter") {
+    this.setCredentials(authToken, apiKey, provider);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const authPayload: AuthMessage = {
+        type: "auth",
+        token: this.authToken || "dev-dummy-token",
+        ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+        ...(this.provider ? { provider: this.provider } : {}),
+      };
+      this.ws.send(JSON.stringify(authPayload));
+    }
+  }
+
+  private setStatus(next: ConnectionStatus) {
+    if (this.status !== next) {
+      this.status = next;
+      this.options.onStatusChange(next);
+    }
   }
 
   private setupDocSubscription() {
@@ -139,15 +157,13 @@ export class LoroSyncClient {
   }
 
   public connect() {
-    if (this.isDestroyed) return;
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
+    if (this.isDestroyed || this.ws) return;
 
     this.setStatus("connecting");
 
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.options.url);
+      this.ws.binaryType = "arraybuffer";
 
       this.ws.onopen = () => {
         this.setStatus("connected");
@@ -183,8 +199,24 @@ export class LoroSyncClient {
         }
       };
 
-      this.ws.onmessage = async (event) => {
-        // MU server protocol: All frames are JSON text frames
+      this.ws.onmessage = (event) => {
+        // Binary CRDT updates
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          if (bytes.length > 0) {
+            this.doc.import(bytes);
+            this.doc.commit();
+            this.lastVersion = this.doc.version();
+
+            this.stats.bytesReceived += bytes.length;
+            this.stats.updatesReceived += 1;
+            this.stats.lastSyncAt = new Date();
+            this.options.onStatsChange({ ...this.stats });
+          }
+          return;
+        }
+
+        // Text / JSON updates (crdt-sync, awareness, agent status)
         if (typeof event.data === "string") {
           try {
             const message = JSON.parse(event.data);
@@ -222,7 +254,7 @@ export class LoroSyncClient {
               const statusMsg = message as AgentTaskStatus;
               this.options.onAgentStatusChange?.(statusMsg);
 
-              // Reset terminal states ('completed' or 'failed') to idle after 3 seconds
+              // Reset terminal states ('completed' or 'failed') to idle after 8 seconds
               if (statusMsg.status === "completed" || statusMsg.status === "failed") {
                 if (this.agentStatusResetTimer) {
                   clearTimeout(this.agentStatusResetTimer);
@@ -230,7 +262,7 @@ export class LoroSyncClient {
                 this.agentStatusResetTimer = setTimeout(() => {
                   this.options.onAgentStatusChange?.(null);
                   this.agentStatusResetTimer = null;
-                }, 3000);
+                }, 8000);
               }
             }
           } catch (err) {
@@ -274,7 +306,7 @@ export class LoroSyncClient {
     }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Package into crdt-sync JSON frame required by MU server
+      // Package into crdt-sync JSON frame required by server
       const syncMsg: SyncMessage = {
         type: "crdt-sync",
         docId: this.docId,
@@ -309,20 +341,35 @@ export class LoroSyncClient {
   public dispatchAgentTask(
     prompt: string,
     simulateFailure = false,
+    failureType: "syntax" | "assertion" = "syntax",
+    enableSelfHealing = false,
+    byokConfig?: ByokConfig,
+    authToken?: string,
     taskApiKey?: string,
-    taskProvider?: "openai" | "anthropic" | "openrouter",
+    taskProvider?: "openai" | "anthropic" | "openrouter"
   ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const taskId = `task-${Date.now()}`;
+    const effectiveApiKey = taskApiKey || byokConfig?.apiKey || this.apiKey;
+    const effectiveProvider =
+      taskProvider ||
+      (byokConfig?.provider && byokConfig.provider !== "custom" ? byokConfig.provider : undefined) ||
+      this.provider;
+
     const request = {
       type: "agent-task-request",
       taskId,
       docId: this.docId,
       prompt,
       simulateFailure,
-      apiKey: taskApiKey || this.apiKey,
-      provider: taskProvider || this.provider,
+      failureType,
+      enableSelfHealing,
+      byokConfig,
+      authToken: authToken || this.authToken,
+      apiKey: effectiveApiKey,
+      provider: effectiveProvider,
+      docFrontier: this.getFrontierString(),
     };
 
     this.ws.send(JSON.stringify(request));

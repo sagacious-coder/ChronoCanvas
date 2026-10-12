@@ -1,7 +1,7 @@
 /**
- * ChronoCanvas Shared Contracts (Stage 0 - Day 1 Freeze)
+ * ChronoCanvas Shared Contracts (Stage 4 - Day 13 Auth & BYOK Freeze)
  * Interface definitions for WebSocket binary delta exchanges,
- * CRDT Frontiers, and Agent Step Checkpoints.
+ * CRDT Frontiers, Sandbox Pre-Flight Diagnostics, JWT Authentication, and BYOK.
  */
 
 export interface CursorPosition {
@@ -19,6 +19,14 @@ export interface PeerAwareness {
 }
 
 /**
+ * A Loro **Version Vector**, hex-encoded for the JSON wire.
+ */
+export type VersionVectorHex = string;
+
+/** Who authored a delta: a browser user, or an autonomous agent worker. */
+export type EditOrigin = 'human' | 'agent';
+
+/**
  * Static 64-bit Peer ID for the autonomous AI agent worker ("999999999").
  * Enforces clear attribution in Loro CRDT frontiers and timeline version control.
  */
@@ -30,11 +38,13 @@ export interface SyncMessage {
   versionFrom?: string; // Hex representation of Loro Frontier
   payload: string;     // Base64 encoded binary delta
   senderId: string;
+  origin?: EditOrigin;
   timestamp: number;
 }
 
 export interface AwarenessMessage {
   type: 'awareness-update';
+  docId?: string;
   peer: PeerAwareness;
   timestamp: number;
 }
@@ -58,6 +68,29 @@ export interface AuthErrorMessage {
   code?: 'UNAUTHORIZED' | 'INVALID_TOKEN' | 'TOKEN_EXPIRED';
 }
 
+export interface JwtPayload {
+  sub: string;
+  exp?: number;
+  iat?: number;
+  role?: string;
+  [key: string]: unknown;
+}
+
+export interface ByokConfig {
+  enabled: boolean;
+  provider: 'openrouter' | 'anthropic' | 'openai' | 'custom';
+  apiKey?: string;
+  model: string;
+  customBaseUrl?: string;
+}
+
+export interface UserAuthSession {
+  mode: 'guest' | 'jwt';
+  token?: string;
+  subject?: string;
+  expiresAt?: number;
+}
+
 export interface AgentTaskRequest {
   type: 'agent-task-request';
   taskId: string;
@@ -65,9 +98,37 @@ export interface AgentTaskRequest {
   docId?: string;
   targetRange?: { from: number; to: number };
   docFrontier?: string; // Pre-flight checkpoint hash
-  apiKey?: string;     // BYOK API key
+  apiKey?: string;     // BYOK API key for LLM generation
   provider?: 'openai' | 'anthropic' | 'openrouter';
   simulateFailure?: boolean;
+  failureType?: 'syntax' | 'assertion';
+  enableSelfHealing?: boolean; // Day 11: triggers autonomous self-healing loop
+  byokConfig?: ByokConfig;     // Day 13: Bring-Your-Own-Key configuration
+  authToken?: string;          // Day 13: JWT Bearer authorization token
+}
+
+export interface SandboxTestCase {
+  name: string;
+  status: 'passed' | 'failed' | 'running';
+  durationMs?: number;
+  error?: string;
+}
+
+export interface SandboxTestResult {
+  suite: string; // e.g. "astral-sh/uv pre-flight"
+  runner: 'uv run python -m py_compile' | 'uv run pytest';
+  passed: boolean;
+  totalTests: number;
+  passedTests: number;
+  failedTests: number;
+  durationMs: number; // target <50ms
+  testCases: SandboxTestCase[];
+  stdout?: string;
+  stderr?: string;
+  errorTraceback?: string;
+  preFlightStage?: 'checkpoint-saved' | 'code-generated' | 'testing' | 'self-healing' | 'broadcast-committed' | 'broadcast-aborted';
+  attempt?: number;
+  maxAttempts?: number;
 }
 
 export interface AgentTaskStatus {
@@ -88,8 +149,35 @@ export interface AgentTaskStatus {
   rollbackTriggered?: boolean;
   errorTrace?: string;
   tokenCount?: number;
+  sandboxResult?: SandboxTestResult;
+  preFlightStage?: 'checkpoint-saved' | 'code-generated' | 'testing' | 'self-healing' | 'broadcast-committed' | 'broadcast-aborted';
+  failureType?: 'syntax' | 'assertion';
+  selfHealingAttempt?: number;
+  maxAttempts?: number;
+  healedSuccessfully?: boolean;
+  healedCode?: string;
+  byokUsed?: boolean;
+  modelUsed?: string;
 }
 
+export interface AskAiRequest {
+  docId: string;
+  stateBytes: number[];
+  prompt?: string;
+  apiKey?: string;
+  provider?: 'openai' | 'anthropic' | 'openrouter';
+  simulateFailure?: boolean;
+  enableSelfHealing?: boolean;
+  byokConfig?: ByokConfig;
+  authToken?: string;
+}
+
+export interface AskAiResponse {
+  workflowId: string;
+  submittedAt?: string;
+  status?: string;
+  message?: string;
+}
 
 export type ChronoWebSocketMessage =
   | AuthMessage

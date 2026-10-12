@@ -14,7 +14,11 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@chronocanvas/shared-types": ["./src/types/shared.ts", "../../packages/shared-types/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

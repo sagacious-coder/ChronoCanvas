@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LoroDoc } from "loro-crdt";
 import { LoroSyncClient, ConnectionStatus, SyncStats } from "../services/loroSync";
-import { AgentTaskStatus, PeerAwareness, AuthSuccessMessage, AuthErrorMessage } from "../types/shared";
+import { AgentTaskStatus, PeerAwareness, AuthSuccessMessage, AuthErrorMessage, ByokConfig } from "../types/shared";
 import { loadUserSettings, getActiveApiKey, LlmProvider } from "../components/SettingsModal";
 
 export function useLoroSync(
@@ -80,24 +80,41 @@ export function useLoroSync(
     serverUrl,
     docId,
     peerId,
-    effectiveAuthToken,
-    effectiveApiKey,
-    effectiveProvider,
     handleRemoteAwareness,
     handleAuthSuccess,
     handleAuthError,
   ]);
 
+  const updateCredentials = useCallback(
+    (newAuthToken: string, newApiKey?: string, newProvider?: LlmProvider) => {
+      clientRef.current?.updateCredentials(newAuthToken, newApiKey, newProvider);
+    },
+    [],
+  );
+
   const dispatchAgentTask = useCallback(
-    (prompt: string, simulateFailure = false, taskApiKey?: string, taskProvider?: LlmProvider) => {
+    (
+      prompt: string,
+      simulateFailure = false,
+      failureType: "syntax" | "assertion" = "syntax",
+      enableSelfHealing = false,
+      byokConfig?: ByokConfig,
+      authTokenParam?: string,
+      taskApiKey?: string,
+      taskProvider?: LlmProvider,
+    ) => {
       clientRef.current?.dispatchAgentTask(
         prompt,
         simulateFailure,
-        taskApiKey || effectiveApiKey,
+        failureType,
+        enableSelfHealing,
+        byokConfig,
+        authTokenParam || effectiveAuthToken,
+        taskApiKey || byokConfig?.apiKey || effectiveApiKey,
         taskProvider || effectiveProvider,
       );
     },
-    [effectiveApiKey, effectiveProvider],
+    [effectiveAuthToken, effectiveApiKey, effectiveProvider],
   );
 
   const clearAgentStatus = useCallback(() => {
@@ -137,6 +154,7 @@ export function useLoroSync(
     getFrontierString,
     getFrontierEntries,
     reconnect,
+    updateCredentials,
     sendUpdate: () => clientRef.current?.exportAndSendUpdate(),
   };
 }
