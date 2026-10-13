@@ -4,44 +4,52 @@
 
 @layer base {
   body {
-    background-color: #FDFBF7;
-    color: #1F2328;
+    background-color: var(--chrono-page-bg, #FDFBF7);
+    color: var(--chrono-page-text, #1F2328);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 }
 
-/* CodeMirror 6 Apple Creamy Theme */
+/* CodeMirror 6 Dynamic IDE Theme Engine */
 .cm-editor {
   height: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 13.5px;
-  background-color: #FAF8F5;
-  color: #1F2328;
+  background-color: var(--chrono-editor-bg, #FAF8F5) !important;
+  color: var(--chrono-editor-text, #1F2328) !important;
 }
 
 .cm-scroller {
   overflow: auto;
+  background-color: var(--chrono-editor-bg, #FAF8F5) !important;
+}
+
+.cm-content {
+  caret-color: var(--chrono-editor-accent, #2563EB) !important;
+  color: var(--chrono-editor-text, #1F2328) !important;
+  background-color: var(--chrono-editor-bg, #FAF8F5) !important;
 }
 
 .cm-gutters {
-  background-color: #F4EFE6 !important;
-  color: #8C8273 !important;
-  border-right: 1px solid #E6E2D8 !important;
+  background-color: var(--chrono-editor-gutter, #F4EFE6) !important;
+  color: var(--chrono-editor-gutter-text, #8C8273) !important;
+  border-right: 1px solid var(--chrono-editor-border, #E6E2D8) !important;
 }
 
 .cm-activeLine {
-  background-color: #F1EBE0 !important;
+  background-color: var(--chrono-editor-active-line, #F1EBE0) !important;
 }
 
 .cm-activeLineGutter {
-  background-color: #E8E1D2 !important;
-  color: #3A352D !important;
+  background-color: var(--chrono-editor-gutter-active, #E8E1D2) !important;
+  color: var(--chrono-editor-text, #3A352D) !important;
 }
 
-.cm-selectionBackground, ::selection {
-  background-color: #DDE5F5 !important;
+.cm-selectionBackground,
+.cm-content ::selection {
+  background-color: var(--chrono-editor-selection, #DDE5F5) !important;
 }
 
 /* Collaborative Multi-Cursor Presence */

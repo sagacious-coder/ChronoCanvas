@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { ByokConfig, UserAuthSession } from "../types/shared";
 import { THEMES, ThemeConfig } from "../styles/themes";
+import { SettingsIcon, CloseIcon, CheckIcon } from "./Icons";
 
 export interface WorkspacePanelSettings {
   defaultView: "minimal" | "sandbox" | "history" | "all";
@@ -38,13 +39,9 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<"themes" | "panels" | "byok" | "jwt">("themes");
 
-  // Local state for themes
   const [selectedTheme, setSelectedTheme] = useState<string>(currentThemeId);
-
-  // Local state for panels
   const [panels, setPanels] = useState<WorkspacePanelSettings>(panelSettings);
 
-  // Local state for BYOK
   const [enableByok, setEnableByok] = useState<boolean>(byokConfig.enabled);
   const [provider, setProvider] = useState<ByokConfig["provider"]>(byokConfig.provider || "openrouter");
   const [apiKey, setApiKey] = useState<string>(byokConfig.apiKey || "");
@@ -52,7 +49,6 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
   const [showKey, setShowKey] = useState<boolean>(false);
   const [testKeyStatus, setTestKeyStatus] = useState<string | null>(null);
 
-  // Local state for JWT
   const [authMode, setAuthMode] = useState<"guest" | "jwt">(authSession.mode || "guest");
   const [jwtToken, setJwtToken] = useState<string>(authSession.token || "");
   const [showToken, setShowToken] = useState<boolean>(false);
@@ -151,36 +147,33 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             backgroundColor: currentTheme.colors.headerBg,
             borderColor: currentTheme.colors.border,
           }}
-          className="flex items-center justify-between px-6 py-4 border-b"
+          className="flex items-center justify-between px-6 py-3.5 border-b"
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             <div
               style={{
                 backgroundColor: currentTheme.colors.accentBg,
                 borderColor: currentTheme.colors.accent,
                 color: currentTheme.colors.accent,
               }}
-              className="flex items-center justify-center w-8 h-8 rounded-xl border font-bold text-sm shadow-apple-sm"
+              className="flex items-center justify-center w-7 h-7 rounded-lg border font-bold text-sm shadow-apple-sm"
             >
-              ⚙️
+              <SettingsIcon size={15} />
             </div>
             <div>
-              <h2 className="text-sm font-semibold" style={{ color: currentTheme.colors.text }}>
-                Settings &amp; Workspace Architecture
+              <h2 className="text-xs font-semibold" style={{ color: currentTheme.colors.text }}>
+                Settings &amp; Workspace Preferences
               </h2>
-              <p className="text-[11px]" style={{ color: currentTheme.colors.textMuted }}>
-                Themes &bull; Modular Panels &bull; BYOK &bull; JWT Authentication
-              </p>
             </div>
           </div>
 
           <button
             type="button"
             onClick={onClose}
-            className="text-xs w-7 h-7 rounded-lg hover:opacity-75 flex items-center justify-center transition cursor-pointer"
+            className="text-xs w-6 h-6 rounded-lg hover:opacity-75 flex items-center justify-center transition cursor-pointer"
             style={{ color: currentTheme.colors.textMuted }}
           >
-            ✕
+            <CloseIcon size={14} />
           </button>
         </div>
 
@@ -192,64 +185,39 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
           }}
           className="flex border-b px-6 text-xs font-medium overflow-x-auto"
         >
-          <button
-            type="button"
-            onClick={() => setActiveTab("themes")}
-            className={`py-3 px-3.5 border-b-2 transition cursor-pointer whitespace-nowrap ${
-              activeTab === "themes"
-                ? "border-[#2563EB] text-[#2563EB] font-semibold"
-                : "border-transparent text-[#656D76] hover:text-[#1F2328]"
-            }`}
-          >
-            🎨 Themes ({Object.keys(THEMES).length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("panels")}
-            className={`py-3 px-3.5 border-b-2 transition cursor-pointer whitespace-nowrap ${
-              activeTab === "panels"
-                ? "border-[#2563EB] text-[#2563EB] font-semibold"
-                : "border-transparent text-[#656D76] hover:text-[#1F2328]"
-            }`}
-          >
-            🖥️ Workspace Panels
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("byok")}
-            className={`py-3 px-3.5 border-b-2 transition cursor-pointer whitespace-nowrap ${
-              activeTab === "byok"
-                ? "border-[#2563EB] text-[#2563EB] font-semibold"
-                : "border-transparent text-[#656D76] hover:text-[#1F2328]"
-            }`}
-          >
-            🔑 Bring Your Own Key
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("jwt")}
-            className={`py-3 px-3.5 border-b-2 transition cursor-pointer whitespace-nowrap ${
-              activeTab === "jwt"
-                ? "border-[#2563EB] text-[#2563EB] font-semibold"
-                : "border-transparent text-[#656D76] hover:text-[#1F2328]"
-            }`}
-          >
-            🛡️ JWT Auth
-          </button>
+          {[
+            { id: "themes", label: "Themes" },
+            { id: "panels", label: "Panels & Layout" },
+            { id: "byok", label: "Bring Your Own Key" },
+            { id: "jwt", label: "JWT Authentication" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id as typeof activeTab)}
+              className={`py-3 px-3.5 border-b-2 transition cursor-pointer whitespace-nowrap text-xs ${
+                activeTab === tab.id
+                  ? "border-[#2563EB] text-[#2563EB] font-semibold"
+                  : "border-transparent text-[#656D76] hover:text-[#1F2328]"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 space-y-5 overflow-y-auto max-h-[65vh]">
-          {/* TAB 1: THEMES & APPEARANCE */}
+        <div className="p-5 space-y-4 overflow-y-auto max-h-[65vh]">
+          {/* TAB 1: THEMES */}
           {activeTab === "themes" && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-xs font-semibold" style={{ color: currentTheme.colors.text }}>
-                    Color Palette &amp; Theme Engine
+                    Color Palette
                   </h3>
                   <p className="text-[11px]" style={{ color: currentTheme.colors.textMuted }}>
-                    Original Creamy Daylight is default. Instant live synchronization with CodeMirror 6 editor.
+                    Original Creamy Daylight is default. Synchronized live with editor.
                   </p>
                 </div>
                 <span
@@ -258,14 +226,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                     color: currentTheme.colors.accent,
                     borderColor: currentTheme.colors.accent,
                   }}
-                  className="text-[10px] font-mono px-2.5 py-1 rounded-full border font-semibold"
+                  className="text-[10px] font-mono px-2.5 py-0.5 rounded-full border font-semibold"
                 >
-                  Active: {currentTheme.name}
+                  {currentTheme.name}
                 </span>
               </div>
 
               {/* Theme Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {Object.values(THEMES).map((th: ThemeConfig) => {
                   const isSelected = selectedTheme === th.id;
                   return (
@@ -276,7 +244,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                         setSelectedTheme(th.id);
                         onSelectTheme(th.id);
                       }}
-                      className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between shadow-apple-sm ${
+                      className={`p-2.5 rounded-xl border text-left transition cursor-pointer flex items-center justify-between shadow-apple-sm ${
                         isSelected
                           ? "ring-2 ring-[#2563EB]"
                           : "hover:border-[#8C959F]"
@@ -287,35 +255,32 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                         color: th.colors.text,
                       }}
                     >
-                      <div className="flex items-center gap-3">
-                        {/* Color preview swatch stack */}
+                      <div className="flex items-center gap-2.5">
                         <div className="flex -space-x-1.5 items-center">
                           <span
-                            className="w-4 h-4 rounded-full border border-black/10 shadow-xs"
+                            className="w-3.5 h-3.5 rounded-full border border-black/10"
                             style={{ backgroundColor: th.colors.bg }}
                           />
                           <span
-                            className="w-4 h-4 rounded-full border border-black/10 shadow-xs"
+                            className="w-3.5 h-3.5 rounded-full border border-black/10"
                             style={{ backgroundColor: th.colors.cardBg }}
                           />
                           <span
-                            className="w-4 h-4 rounded-full border border-black/10 shadow-xs"
+                            className="w-3.5 h-3.5 rounded-full border border-black/10"
                             style={{ backgroundColor: th.colors.accent }}
                           />
                         </div>
 
                         <div>
                           <div className="text-xs font-semibold">{th.name}</div>
-                          <div className="text-[10px] opacity-75 font-mono">
-                            {th.isDark ? "Dark Theme" : "Light Theme"}
+                          <div className="text-[9px] opacity-75 font-mono">
+                            {th.isDark ? "Dark" : "Light"}
                           </div>
                         </div>
                       </div>
 
                       {isSelected && (
-                        <span className="text-xs font-bold text-[#2563EB] bg-[#EFF6FF] px-2 py-0.5 rounded-full border border-[#BFDBFE]">
-                          ✓
-                        </span>
+                        <CheckIcon size={14} className="text-[#2563EB]" />
                       )}
                     </button>
                   );
@@ -324,41 +289,24 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 2: WORKSPACE PANELS (DECLUTTERING OPTIONS) */}
+          {/* TAB 2: PANELS */}
           {activeTab === "panels" && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div>
                 <h3 className="text-xs font-semibold" style={{ color: currentTheme.colors.text }}>
-                  Declutter Landing Page Layout
+                  Workspace Layout
                 </h3>
                 <p className="text-[11px]" style={{ color: currentTheme.colors.textMuted }}>
-                  Choose your default view mode and select which panels are permanently docked to keep the interface minimal.
+                  Select your default view and customize which panels appear on screen.
                 </p>
               </div>
 
-              {/* View Mode Cards */}
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-2 gap-2">
                 {[
-                  {
-                    id: "minimal",
-                    title: "💻 Code & Agent (Clean)",
-                    desc: "Hides diagnostic and history panels. Focuses purely on CodeMirror and agent dispatching.",
-                  },
-                  {
-                    id: "sandbox",
-                    title: "⚡ Pre-Flight Sandbox",
-                    desc: "Focuses on the astral-sh/uv 5-stage pre-flight stepper and test suite telemetry.",
-                  },
-                  {
-                    id: "history",
-                    title: "📜 Dual-Zone History",
-                    desc: "Focuses on Loro CRDT immutable checkpoints and instant sub-5ms time travel.",
-                  },
-                  {
-                    id: "all",
-                    title: "🎛️ Full Stack / All Panels",
-                    desc: "Displays all panels simultaneously for comprehensive debugging and supervision.",
-                  },
+                  { id: "minimal", title: "Code & Agent (Clean)", desc: "Minimalist editor view. Keeps landing page clutter-free." },
+                  { id: "sandbox", title: "Sandbox Testing", desc: "Focuses on pre-flight gatekeeper and test runner." },
+                  { id: "history", title: "Version History", desc: "Focuses on dual-zone checkpoints and rollbacks." },
+                  { id: "all", title: "Full View", desc: "Displays all panels simultaneously." },
                 ].map((item) => (
                   <button
                     key={item.id}
@@ -369,37 +317,33 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                         defaultView: item.id as WorkspacePanelSettings["defaultView"],
                       })
                     }
-                    className={`p-3 rounded-xl border text-left transition cursor-pointer shadow-apple-sm ${
+                    className={`p-2.5 rounded-xl border text-left transition cursor-pointer shadow-apple-sm ${
                       panels.defaultView === item.id
                         ? "border-[#2563EB] bg-[#EFF6FF] text-[#1D4ED8]"
                         : "border-[#E6E2D8] bg-[#FFFFFF] text-[#1F2328]"
                     }`}
                   >
                     <div className="text-xs font-semibold">{item.title}</div>
-                    <div className="text-[10px] text-[#656D76] mt-1 leading-relaxed">{item.desc}</div>
+                    <div className="text-[10px] text-[#656D76] mt-0.5">{item.desc}</div>
                   </button>
                 ))}
               </div>
 
-              {/* Panel Visibility Switches */}
-              <div className="p-4 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm space-y-3">
-                <div className="text-[11px] font-semibold text-[#4B515D] uppercase tracking-wider mb-1">
-                  Individual Panel Docking Toggles
+              <div className="p-3 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm space-y-2">
+                <div className="text-[10px] font-semibold text-[#4B515D] uppercase tracking-wider">
+                  Panel Visibility Toggles
                 </div>
 
                 {[
-                  { key: "showAgentBar", label: "Temporal Agent Workflow Controller", desc: "Top prompt dispatch and checkpoint frontier status" },
-                  { key: "showSandboxWidget", label: "astral-sh/uv Pre-Flight Sandbox Widget", desc: "5-stage verification stepper & sub-50ms test telemetry" },
-                  { key: "showHistoryTimeline", label: "Dual-Zone Version Control Timeline", desc: "Pinned initial baseline state and stacked edit revisions" },
-                  { key: "showTelemetryBar", label: "Binary Delta Network Telemetry Bar", desc: "Bytes sent/received and last sync timestamp" },
-                  { key: "showContainerBar", label: "Stage 4 Container Distribution Bar", desc: "Nginx Alpine container specs and vendor-split caching" },
+                  { key: "showAgentBar", label: "Agent Workflow Controller" },
+                  { key: "showSandboxWidget", label: "Pre-Flight Sandbox Widget" },
+                  { key: "showHistoryTimeline", label: "Version Control History" },
+                  { key: "showTelemetryBar", label: "Network Telemetry Bar" },
+                  { key: "showContainerBar", label: "Container Status Bar" },
                 ].map((row) => (
-                  <div key={row.key} className="flex items-center justify-between py-1.5 border-b border-[#F4EFE6] last:border-b-0">
-                    <div>
-                      <div className="text-xs font-medium text-[#1F2328]">{row.label}</div>
-                      <div className="text-[10px] text-[#656D76]">{row.desc}</div>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer ml-3 flex-shrink-0">
+                  <div key={row.key} className="flex items-center justify-between py-1 border-b border-[#F4EFE6] last:border-b-0 text-xs">
+                    <span className="text-[#1F2328]">{row.label}</span>
+                    <label className="relative inline-flex items-center cursor-pointer ml-3">
                       <input
                         type="checkbox"
                         checked={panels[row.key as keyof WorkspacePanelSettings] as boolean}
@@ -411,7 +355,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                         }
                         className="sr-only peer"
                       />
-                      <div className="w-9 h-5 bg-[#E6E2D8] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#D8D2C4] after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#2563EB]" />
+                      <div className="w-8 h-4 bg-[#E6E2D8] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#D8D2C4] after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-[#2563EB]" />
                     </label>
                   </div>
                 ))}
@@ -421,14 +365,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
           {/* TAB 3: BYOK */}
           {activeTab === "byok" && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-3.5 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm">
                 <div>
                   <div className="text-xs font-semibold text-[#1F2328]">
-                    Enable Bring-Your-Own-Key (BYOK)
+                    Bring-Your-Own-Key (BYOK)
                   </div>
-                  <div className="text-[11px] text-[#656D76] mt-0.5">
-                    Route code generation through your personal API key instead of the managed cluster
+                  <div className="text-[10px] text-[#656D76]">
+                    Route code generation through your personal API key
                   </div>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
@@ -438,35 +382,34 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                     onChange={(e) => setEnableByok(e.target.checked)}
                     className="sr-only peer"
                   />
-                  <div className="w-10 h-5 bg-[#E6E2D8] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#D8D2C4] after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#2563EB]" />
+                  <div className="w-9 h-5 bg-[#E6E2D8] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#D8D2C4] after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#2563EB]" />
                 </label>
               </div>
 
               {enableByok ? (
-                <div className="space-y-3.5 p-4 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm">
+                <div className="space-y-3 p-3.5 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm">
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#4B515D] mb-1.5 uppercase tracking-wider">
-                      LLM Gateway Provider
+                    <label className="block text-[10px] font-semibold text-[#4B515D] mb-1 uppercase tracking-wider">
+                      Provider
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-1.5">
                       {[
-                        { id: "openrouter", label: "OpenRouter (Recommended)", desc: "All models, dynamic routing" },
-                        { id: "anthropic", label: "Anthropic Direct", desc: "Native Claude 3.5 Sonnet" },
-                        { id: "openai", label: "OpenAI Direct", desc: "Native GPT-4o / GPT-4o-mini" },
-                        { id: "custom", label: "Custom / Local", desc: "Ollama, vLLM, Localhost" },
+                        { id: "openrouter", label: "OpenRouter" },
+                        { id: "anthropic", label: "Anthropic Direct" },
+                        { id: "openai", label: "OpenAI Direct" },
+                        { id: "custom", label: "Custom / Local" },
                       ].map((item) => (
                         <button
                           key={item.id}
                           type="button"
                           onClick={() => setProvider(item.id as ByokConfig["provider"])}
-                          className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
+                          className={`p-2 rounded-lg border text-left transition cursor-pointer text-xs font-medium ${
                             provider === item.id
                               ? "bg-[#EFF6FF] border-[#2563EB] text-[#1D4ED8]"
-                              : "bg-[#FAF8F5] border-[#E6E2D8] text-[#1F2328] hover:border-[#D8D2C4]"
+                              : "bg-[#FAF8F5] border-[#E6E2D8] text-[#1F2328]"
                           }`}
                         >
-                          <div className="text-xs font-semibold">{item.label}</div>
-                          <div className="text-[10px] text-[#656D76] mt-0.5">{item.desc}</div>
+                          {item.label}
                         </button>
                       ))}
                     </div>
@@ -474,70 +417,60 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="text-[11px] font-semibold text-[#4B515D] uppercase tracking-wider">
+                      <label className="text-[10px] font-semibold text-[#4B515D] uppercase tracking-wider">
                         {provider.toUpperCase()} API Key
                       </label>
                       <button
                         type="button"
                         onClick={() => setShowKey(!showKey)}
-                        className="text-[11px] text-[#2563EB] hover:underline"
+                        className="text-[10px] text-[#2563EB] hover:underline"
                       >
-                        {showKey ? "Hide Key" : "Show Key"}
+                        {showKey ? "Hide" : "Show"}
                       </button>
                     </div>
                     <input
                       type={showKey ? "text" : "password"}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder={provider === "anthropic" ? "sk-ant-api03-..." : provider === "openai" ? "sk-proj-..." : "sk-or-v1-..."}
-                      className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl px-3.5 py-2 text-xs font-mono text-[#1F2328] placeholder-[#8C959F] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                      placeholder="Enter API key..."
+                      className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl px-3 py-1.5 text-xs font-mono text-[#1F2328] focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#4B515D] mb-1 uppercase tracking-wider">
+                    <label className="block text-[10px] font-semibold text-[#4B515D] mb-1 uppercase tracking-wider">
                       Model Identifier
                     </label>
                     <select
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
-                      className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl px-3 py-2 text-xs text-[#1F2328] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                      className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl px-3 py-1.5 text-xs text-[#1F2328] focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
                     >
-                      <option value="anthropic/claude-3.5-sonnet">Anthropic Claude 3.5 Sonnet (Prompt Caching 90% Discount)</option>
-                      <option value="openai/gpt-4o">OpenAI GPT-4o (Omni Reasoning)</option>
-                      <option value="openai/gpt-4o-mini">OpenAI GPT-4o-mini (High Speed / Low Cost)</option>
-                      <option value="deepseek/deepseek-coder">DeepSeek Coder V2 (Coding Specialist)</option>
+                      <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Prompt Caching Active)</option>
+                      <option value="openai/gpt-4o">OpenAI GPT-4o</option>
+                      <option value="openai/gpt-4o-mini">OpenAI GPT-4o-mini</option>
+                      <option value="deepseek/deepseek-coder">DeepSeek Coder</option>
                     </select>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-[#F7F4EB] border border-[#E6E2D8] text-[11px] text-[#4B515D] leading-relaxed">
-                    <strong className="text-[#1F2328]">Prompt Caching Advantage:</strong> ChronoCanvas Loro CRDT version hashes are immutable. Repeated requests reuse cached document context, cutting generation latency by up to 60% and token costs by up to 90%.
                   </div>
 
                   <div className="flex items-center justify-between pt-1">
                     <button
                       type="button"
                       onClick={handleTestKeyConnectivity}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-[#FAF8F5] hover:bg-[#EFEAD9] text-[#1F2328] border border-[#D8D2C4] font-medium transition cursor-pointer shadow-apple-sm"
+                      className="text-xs px-2.5 py-1 rounded-lg bg-[#FAF8F5] hover:bg-[#EFEAD9] text-[#1F2328] border border-[#D8D2C4] font-medium transition cursor-pointer shadow-apple-sm"
                     >
-                      Verify Key Connectivity
+                      Test Key Connectivity
                     </button>
                     {testKeyStatus && (
-                      <span className={`text-[11px] font-mono ${testKeyStatus.startsWith("✓") ? "text-[#137333]" : "text-[#B45309]"}`}>
+                      <span className={`text-[10px] font-mono ${testKeyStatus.startsWith("✓") ? "text-[#137333]" : "text-[#B45309]"}`}>
                         {testKeyStatus}
                       </span>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="p-4 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm space-y-2">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-[#137333]">
-                    <span className="w-2 h-2 rounded-full bg-[#137333]" />
-                    Managed ChronoCanvas Cluster Active
-                  </div>
-                  <p className="text-xs text-[#656D76] leading-relaxed">
-                    Requests will be routed automatically through the backend gateway’s pooled worker keys. Zero local configuration required.
-                  </p>
+                <div className="p-3 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm text-xs text-[#656D76]">
+                  Managed ChronoCanvas cluster active. Requests routed through pooled keys.
                 </div>
               )}
             </div>
@@ -545,52 +478,52 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
 
           {/* TAB 4: JWT AUTH */}
           {activeTab === "jwt" && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={() => setAuthMode("guest")}
-                  className={`p-3 rounded-xl border text-left transition cursor-pointer shadow-apple-sm ${
+                  className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                     authMode === "guest"
                       ? "bg-[#EFF6FF] border-[#2563EB] text-[#1D4ED8]"
-                      : "bg-[#FFFFFF] border-[#E6E2D8] text-[#1F2328] hover:border-[#D8D2C4]"
+                      : "bg-[#FFFFFF] border-[#E6E2D8] text-[#1F2328]"
                   }`}
                 >
-                  <div className="text-xs font-semibold">Guest Developer Mode</div>
-                  <div className="text-[10px] text-[#656D76] mt-0.5">Anonymous local pairing without JWT enforcement</div>
+                  <div className="text-xs font-semibold">Guest Dev Mode</div>
+                  <div className="text-[10px] text-[#656D76]">Local unauthenticated pairing</div>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setAuthMode("jwt")}
-                  className={`p-3 rounded-xl border text-left transition cursor-pointer shadow-apple-sm ${
+                  className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                     authMode === "jwt"
                       ? "bg-[#EFF6FF] border-[#2563EB] text-[#1D4ED8]"
-                      : "bg-[#FFFFFF] border-[#E6E2D8] text-[#1F2328] hover:border-[#D8D2C4]"
+                      : "bg-[#FFFFFF] border-[#E6E2D8] text-[#1F2328]"
                   }`}
                 >
-                  <div className="text-xs font-semibold">JWT Authenticated Session</div>
-                  <div className="text-[10px] text-[#656D76] mt-0.5">Requires Bearer token for server and agent endpoints</div>
+                  <div className="text-xs font-semibold">JWT Session</div>
+                  <div className="text-[10px] text-[#656D76]">Bearer token verification</div>
                 </button>
               </div>
 
-              <div className="p-4 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm space-y-3">
+              <div className="p-3.5 rounded-xl bg-[#FFFFFF] border border-[#E6E2D8] shadow-apple-sm space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-semibold text-[#4B515D] uppercase tracking-wider">
+                  <label className="text-[10px] font-semibold text-[#4B515D] uppercase tracking-wider">
                     JWT Bearer Token
                   </label>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={handleGenerateDevToken}
-                      className="text-[11px] text-[#2563EB] hover:underline cursor-pointer"
+                      className="text-[10px] text-[#2563EB] hover:underline cursor-pointer"
                     >
                       Generate Dev Token
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowToken(!showToken)}
-                      className="text-[11px] text-[#656D76] hover:underline cursor-pointer"
+                      className="text-[10px] text-[#656D76] hover:underline cursor-pointer"
                     >
                       {showToken ? "Hide" : "Show"}
                     </button>
@@ -598,24 +531,24 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
                 </div>
 
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={jwtToken}
                   onChange={(e) => setJwtToken(e.target.value)}
                   placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl p-2.5 text-[11px] font-mono text-[#1F2328] placeholder-[#8C959F] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                  className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-xl p-2 text-[10px] font-mono text-[#1F2328] focus:outline-none focus:ring-1 focus:ring-[#2563EB]"
                 />
 
                 {jwtToken.trim() ? (
-                  <div className="p-2.5 rounded-lg bg-[#E6F4EA] border border-[#CEEAD6] text-[11px] text-[#137333] flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-[#34A853]" />
-                      <span>Claims Verified: <strong>sub: za-frontend-lead</strong> (Role: Developer &bull; 24h)</span>
+                  <div className="p-2 rounded-lg bg-[#E6F4EA] border border-[#CEEAD6] text-[10px] text-[#137333] flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <CheckIcon size={12} className="text-[#34A853]" />
+                      <span>Claims: <strong>za-frontend-lead</strong> (24h)</span>
                     </div>
-                    <span className="font-mono text-[10px] text-[#0D5224]">Active</span>
+                    <span className="font-mono text-[#0D5224]">Active</span>
                   </div>
                 ) : (
-                  <div className="p-2.5 rounded-lg bg-[#FFFBEB] border border-[#FDE68A] text-[11px] text-[#B45309] flex items-center gap-2">
-                    <span>⚠️ No token provided. Running in guest development fallback.</span>
+                  <div className="p-2 rounded-lg bg-[#FFFBEB] border border-[#FDE68A] text-[10px] text-[#B45309]">
+                    Running in guest development fallback.
                   </div>
                 )}
               </div>
@@ -629,7 +562,7 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             backgroundColor: currentTheme.colors.headerBg,
             borderColor: currentTheme.colors.border,
           }}
-          className="flex items-center justify-between px-6 py-4 border-t"
+          className="flex items-center justify-between px-6 py-3 border-t text-xs"
         >
           <button
             type="button"
@@ -652,14 +585,14 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             className="text-xs underline transition cursor-pointer"
             style={{ color: currentTheme.colors.textMuted }}
           >
-            Reset Defaults
+            Reset
           </button>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl border font-medium text-xs transition cursor-pointer shadow-apple-sm"
+              className="px-3 py-1.5 rounded-xl border font-medium text-xs transition cursor-pointer shadow-apple-sm"
               style={{
                 backgroundColor: currentTheme.colors.cardBg,
                 borderColor: currentTheme.colors.border,
@@ -671,9 +604,10 @@ export const UserSettingsModal: React.FC<UserSettingsModalProps> = ({
             <button
               type="button"
               onClick={handleSave}
-              className="px-4 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-medium text-xs transition cursor-pointer shadow-apple-sm"
+              className="px-3.5 py-1.5 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-medium text-xs transition cursor-pointer shadow-apple-sm flex items-center gap-1.5"
             >
-              {saveFeedback ? "✓ Saved!" : "Save & Apply Settings"}
+              <CheckIcon size={13} />
+              <span>{saveFeedback ? "Saved" : "Save Settings"}</span>
             </button>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState, useRef } from "react";
 import { WorkspaceFile } from "../types/shared";
 import { ThemeConfig } from "../styles/themes";
+import { UploadIcon, DownloadIcon, FileIcon, PlusIcon, TrashIcon, CloseIcon } from "./Icons";
 
 interface FileExplorerProps {
   files: WorkspaceFile[];
@@ -93,10 +94,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           color: activeTheme.colors.text,
         }}
         className="hidden md:flex flex-col items-center justify-center p-2.5 rounded-xl border shadow-apple-sm hover:opacity-90 transition cursor-pointer self-start"
-        title="Open File Explorer (Files & Uploads)"
+        title="Open File Explorer"
       >
-        <span className="text-base">📁</span>
-        <span className="text-[10px] font-mono mt-1 writing-vertical text-[#656D76]">FILES ({files.length})</span>
+        <FileIcon size={18} className="text-[#656D76]" />
+        <span className="text-[10px] font-mono mt-1 text-[#656D76] font-medium">FILES</span>
       </button>
     );
   }
@@ -114,7 +115,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       }}
       onDragLeave={() => setIsDraggingOver(false)}
       onDrop={handleDrop}
-      className={`w-full md:w-64 rounded-2xl border shadow-apple-sm flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden ${
+      className={`w-full md:w-60 rounded-2xl border shadow-apple-sm flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden ${
         isDraggingOver ? "ring-2 ring-[#2563EB] bg-[#EFF6FF]/20" : ""
       }`}
     >
@@ -127,9 +128,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         className="flex items-center justify-between px-3.5 py-2.5 border-b text-xs"
       >
         <div className="flex items-center gap-2">
-          <span className="text-sm">📁</span>
+          <FileIcon size={15} style={{ color: activeTheme.colors.textMuted }} />
           <span className="font-semibold text-[11px] uppercase tracking-wider" style={{ color: activeTheme.colors.text }}>
-            Project Files
+            Workspace
           </span>
           <span
             style={{
@@ -144,26 +145,11 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         </div>
 
         <div className="flex items-center gap-1">
-          {/* Quick Upload Trigger */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="text-xs px-2 py-0.5 rounded-lg border hover:opacity-80 transition cursor-pointer font-medium"
-            style={{
-              backgroundColor: activeTheme.colors.cardBg,
-              borderColor: activeTheme.colors.border,
-              color: activeTheme.colors.text,
-            }}
-            title="Upload file(s) from computer"
-          >
-            ⬆️ Upload
-          </button>
-
           {/* New File Trigger */}
           <button
             type="button"
             onClick={() => setIsCreating(true)}
-            className="text-xs w-6 h-6 rounded-lg border hover:opacity-80 transition cursor-pointer font-bold flex items-center justify-center"
+            className="text-xs w-6 h-6 rounded-lg border hover:opacity-80 transition cursor-pointer flex items-center justify-center"
             style={{
               backgroundColor: activeTheme.colors.cardBg,
               borderColor: activeTheme.colors.border,
@@ -171,7 +157,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             }}
             title="Create new file"
           >
-            +
+            <PlusIcon size={13} />
           </button>
 
           {/* Close Explorer button */}
@@ -180,11 +166,24 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             onClick={onToggleOpen}
             className="text-xs w-6 h-6 rounded-lg hover:opacity-60 transition cursor-pointer flex items-center justify-center"
             style={{ color: activeTheme.colors.textMuted }}
-            title="Collapse file explorer"
+            title="Collapse explorer"
           >
-            ✕
+            <CloseIcon size={13} />
           </button>
         </div>
+      </div>
+
+      {/* Modern Primary Upload Bar */}
+      <div className="p-2 border-b" style={{ borderColor: activeTheme.colors.border }}>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl border font-medium text-xs transition cursor-pointer bg-[#2563EB] text-white hover:bg-[#1D4ED8] shadow-apple-sm"
+          title="Upload file(s) from computer"
+        >
+          <UploadIcon size={14} />
+          <span>Upload File</span>
+        </button>
       </div>
 
       {/* Hidden Native File Input */}
@@ -229,14 +228,14 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               className="text-xs px-1.5 py-1 rounded-lg hover:opacity-60 cursor-pointer"
               style={{ color: activeTheme.colors.textMuted }}
             >
-              ✕
+              <CloseIcon size={12} />
             </button>
           </div>
         </form>
       )}
 
       {/* File List Items */}
-      <div className="p-2 space-y-1 overflow-y-auto max-h-96">
+      <div className="p-1.5 space-y-0.5 overflow-y-auto max-h-80">
         {files.map((file) => {
           const isActive = file.id === activeFileId;
           const badge = getFileBadge(file.name);
@@ -259,7 +258,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                     backgroundColor: badge.bg,
                     color: badge.color,
                   }}
-                  className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border border-black/5 flex-shrink-0"
+                  className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border border-black/5 flex-shrink-0"
                 >
                   {badge.label}
                 </span>
@@ -269,7 +268,6 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               </div>
 
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {/* Delete button (cannot delete if it's the only file) */}
                 {files.length > 1 && (
                   <button
                     type="button"
@@ -280,7 +278,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                     className="w-5 h-5 rounded hover:bg-black/10 flex items-center justify-center text-[10px] text-[#EF4444] transition cursor-pointer"
                     title={`Delete ${file.name}`}
                   >
-                    🗑️
+                    <TrashIcon size={12} />
                   </button>
                 )}
               </div>
@@ -304,7 +302,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           <button
             type="button"
             onClick={() => onDownloadFile(activeFile)}
-            className="text-[11px] px-2 py-0.5 rounded-lg border font-medium hover:opacity-80 transition cursor-pointer flex items-center gap-1"
+            className="text-[11px] px-2 py-0.5 rounded-lg border font-medium hover:opacity-80 transition cursor-pointer flex items-center gap-1.5"
             style={{
               backgroundColor: activeTheme.colors.cardBg,
               borderColor: activeTheme.colors.border,
@@ -312,13 +310,13 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             }}
             title="Download active file to computer"
           >
-            <span>⬇️</span>
-            <span>Download</span>
+            <DownloadIcon size={12} />
+            <span>Export</span>
           </button>
         </div>
 
         <div className="p-2 rounded-lg border border-dashed text-center text-[10px]" style={{ borderColor: activeTheme.colors.border, color: activeTheme.colors.textMuted }}>
-          Drag &amp; drop code files (.ts, .py, .json) here to upload instantly
+          Drag files here to upload instantly
         </div>
       </div>
     </div>

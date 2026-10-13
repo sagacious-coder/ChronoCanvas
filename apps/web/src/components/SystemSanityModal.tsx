@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { ThemeConfig } from "../styles/themes";
+import { BoltIcon, CheckIcon, CloseIcon } from "./Icons";
 
 interface SystemSanityModalProps {
   isOpen: boolean;
@@ -88,7 +89,6 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
     setIsRunningSweep(true);
     setSweepComplete(false);
 
-    // Reset all to running
     setPillars((prev) =>
       prev.map((p) => ({ ...p, status: "running" }))
     );
@@ -125,59 +125,54 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
             backgroundColor: activeTheme.colors.headerBg,
             borderColor: activeTheme.colors.border,
           }}
-          className="flex items-center justify-between px-6 py-4 border-b"
+          className="flex items-center justify-between px-6 py-3.5 border-b"
         >
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] font-bold text-sm shadow-apple-sm">
-              🚀
+          <div className="flex items-center gap-2.5">
+            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] font-bold text-xs shadow-apple-sm">
+              <BoltIcon size={14} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold" style={{ color: activeTheme.colors.text }}>
-                  ChronoCanvas Day 14 System Launch &amp; E2E Sanity Suite
+                <h2 className="text-xs font-semibold" style={{ color: activeTheme.colors.text }}>
+                  ChronoCanvas Day 14 System Sanity Suite
                 </h2>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-[#CEEAD6] bg-[#E6F4EA] text-[#137333] font-bold">
-                  Release v1.0.0
+                <span className="text-[9px] font-mono px-2 py-0.2 rounded-full border border-[#CEEAD6] bg-[#E6F4EA] text-[#137333] font-bold">
+                  v1.0
                 </span>
               </div>
-              <p className="text-[11px]" style={{ color: activeTheme.colors.textMuted }}>
-                End-to-End Verification across all 4 Stages (Days 1–14) &bull; Production Readiness Audit
-              </p>
             </div>
           </div>
 
           <button
             type="button"
             onClick={onClose}
-            className="text-xs w-7 h-7 rounded-lg hover:opacity-75 flex items-center justify-center transition cursor-pointer"
+            className="text-xs w-6 h-6 rounded-lg hover:opacity-75 flex items-center justify-center transition cursor-pointer"
             style={{ color: activeTheme.colors.textMuted }}
           >
-            ✕
+            <CloseIcon size={14} />
           </button>
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
+        <div className="p-5 space-y-3.5 overflow-y-auto max-h-[70vh]">
           {/* Executive Overview Banner */}
-          <div className="p-4 rounded-xl bg-[#E6F4EA] border border-[#CEEAD6] text-xs text-[#137333] shadow-apple-sm flex items-start gap-3">
-            <span className="w-5 h-5 rounded-full bg-[#137333] text-white flex items-center justify-center font-bold text-[11px] flex-shrink-0 mt-0.5">
-              ✓
-            </span>
+          <div className="p-3.5 rounded-xl bg-[#E6F4EA] border border-[#CEEAD6] text-xs text-[#137333] shadow-apple-sm flex items-start gap-2.5">
+            <CheckIcon size={16} className="text-[#137333] flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <div className="font-semibold text-sm">Full Zero-to-One Architecture Validated:</div>
-              <p className="mt-0.5 text-[#0D5224] leading-relaxed">
-                All 14 days of development across Stage 0 (Monorepo), Stage 1 (Real-Time Canvas), Stage 2 (Temporal Agent Loop), Stage 3 (Sub-50ms uv Sandbox &amp; Self-Healing), and Stage 4 (Packaging, 12 Themes, JWT, BYOK) are complete, unified, and verified.
+              <div className="font-semibold text-xs">Architecture Validated (Days 1–14):</div>
+              <p className="mt-0.5 text-[#0D5224] leading-relaxed text-[11px]">
+                Monorepo, Real-Time Canvas, Temporal Agent Loop, Ephemeral Sandbox, Milestone 3 Self-Healing, Multi-File Workspace, 12 Themes, JWT, and Containerization are complete.
               </p>
             </div>
           </div>
 
           {/* 6-Layer Sanity Checklist Grid */}
-          <div className="space-y-2.5">
-            <div className="text-[11px] font-semibold text-[#656D76] uppercase tracking-wider px-1">
-              6-Pillar Architecture Sanity Sweep
+          <div className="space-y-2">
+            <div className="text-[10px] font-semibold text-[#656D76] uppercase tracking-wider px-1">
+              6-Pillar System Sanity Sweep
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {pillars.map((p) => (
                 <div
                   key={p.id}
@@ -185,22 +180,22 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
                     backgroundColor: activeTheme.colors.bg,
                     borderColor: activeTheme.colors.border,
                   }}
-                  className="p-3 rounded-xl border flex items-center justify-between shadow-apple-sm transition-all"
+                  className="p-2.5 rounded-xl border flex items-center justify-between shadow-apple-sm transition-all"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="w-6 h-6 rounded-lg bg-[#E6F4EA] text-[#137333] flex items-center justify-center text-xs font-bold border border-[#CEEAD6]">
-                      {p.status === "verified" ? "✓" : p.status === "running" ? "⏳" : "○"}
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-5 h-5 rounded-lg bg-[#E6F4EA] text-[#137333] flex items-center justify-center text-[10px] font-bold border border-[#CEEAD6]">
+                      {p.status === "verified" ? "✓" : p.status === "running" ? "..." : "○"}
                     </span>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
                         <span className="text-xs font-semibold" style={{ color: activeTheme.colors.text }}>
                           {p.name}
                         </span>
-                        <span className="text-[10px] font-mono opacity-75 px-1.5 py-0.2 rounded border" style={{ borderColor: activeTheme.colors.border }}>
+                        <span className="text-[9px] font-mono opacity-75 px-1.5 py-0.2 rounded border" style={{ borderColor: activeTheme.colors.border }}>
                           {p.stage}
                         </span>
                       </div>
-                      <p className="text-[10px] opacity-80 mt-0.5" style={{ color: activeTheme.colors.textMuted }}>
+                      <p className="text-[10px] opacity-80" style={{ color: activeTheme.colors.textMuted }}>
                         {p.description}
                       </p>
                     </div>
@@ -210,7 +205,7 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
                     <div className="text-xs font-mono font-semibold text-[#137333]">
                       {p.latency}
                     </div>
-                    <div className="text-[10px] opacity-75 font-mono" style={{ color: activeTheme.colors.textMuted }}>
+                    <div className="text-[9px] opacity-75 font-mono" style={{ color: activeTheme.colors.textMuted }}>
                       {p.metric}
                     </div>
                   </div>
@@ -220,23 +215,23 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
           </div>
 
           {/* Final Launch Readiness Summary Card */}
-          <div className="grid grid-cols-3 gap-3 p-3.5 rounded-xl border text-center"
+          <div className="grid grid-cols-3 gap-2.5 p-3 rounded-xl border text-center"
             style={{
               backgroundColor: activeTheme.colors.headerBg,
               borderColor: activeTheme.colors.border,
             }}
           >
             <div>
-              <div className="text-[10px] uppercase font-mono tracking-wider opacity-75">Stages Completed</div>
-              <div className="text-base font-bold text-[#137333] mt-0.5">4 / 4 Stages</div>
+              <div className="text-[9px] uppercase font-mono tracking-wider opacity-75">Stages</div>
+              <div className="text-sm font-bold text-[#137333] mt-0.5">4 / 4 Complete</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase font-mono tracking-wider opacity-75">Development Days</div>
-              <div className="text-base font-bold text-[#2563EB] mt-0.5">14 / 14 Days</div>
+              <div className="text-[9px] uppercase font-mono tracking-wider opacity-75">Timeline</div>
+              <div className="text-sm font-bold text-[#2563EB] mt-0.5">14 / 14 Days</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase font-mono tracking-wider opacity-75">Production Status</div>
-              <div className="text-base font-bold text-[#137333] mt-0.5">Launch Ready</div>
+              <div className="text-[9px] uppercase font-mono tracking-wider opacity-75">Status</div>
+              <div className="text-sm font-bold text-[#137333] mt-0.5">Production Ready</div>
             </div>
           </div>
         </div>
@@ -247,17 +242,17 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
             backgroundColor: activeTheme.colors.headerBg,
             borderColor: activeTheme.colors.border,
           }}
-          className="flex items-center justify-between px-6 py-4 border-t"
+          className="flex items-center justify-between px-6 py-3 border-t text-xs"
         >
           <div className="text-[11px] font-mono" style={{ color: activeTheme.colors.textMuted }}>
-            {sweepComplete ? "✓ All 6 pillars verified with 0 regressions" : "Ready for final end-to-end sanity sweep"}
+            {sweepComplete ? "All 6 pillars verified with 0 regressions" : "Ready for sanity sweep"}
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl border font-medium text-xs transition cursor-pointer shadow-apple-sm"
+              className="px-3 py-1.5 rounded-xl border font-medium text-xs transition cursor-pointer shadow-apple-sm"
               style={{
                 backgroundColor: activeTheme.colors.cardBg,
                 borderColor: activeTheme.colors.border,
@@ -270,9 +265,10 @@ export const SystemSanityModal: React.FC<SystemSanityModalProps> = ({
               type="button"
               onClick={handleRunFullSweep}
               disabled={isRunningSweep}
-              className="px-4 py-2 rounded-xl bg-[#137333] hover:bg-[#0F5A27] text-white font-medium text-xs transition cursor-pointer shadow-apple-sm disabled:opacity-50 flex items-center gap-1.5"
+              className="px-3.5 py-1.5 rounded-xl bg-[#137333] hover:bg-[#0F5A27] text-white font-medium text-xs transition cursor-pointer shadow-apple-sm disabled:opacity-50 flex items-center gap-1.5"
             >
-              <span>{isRunningSweep ? "Sweeping Infrastructure..." : "⚡ Run Full System Sanity Sweep"}</span>
+              <BoltIcon size={12} />
+              <span>{isRunningSweep ? "Sweeping..." : "Run Sanity Sweep"}</span>
             </button>
           </div>
         </div>

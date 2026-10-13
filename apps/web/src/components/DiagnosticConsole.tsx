@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { SandboxTestResult } from "../types/shared";
+import { ThemeConfig, getTheme } from "../styles/themes";
+import { TerminalIcon, CheckIcon, CloseIcon } from "./Icons";
 
 interface DiagnosticConsoleProps {
   errorTrace?: string | null;
@@ -9,6 +11,7 @@ interface DiagnosticConsoleProps {
   onToggleOpen: () => void;
   failureType?: "syntax" | "assertion";
   isSelfHealing?: boolean;
+  activeTheme?: ThemeConfig;
 }
 
 export const DiagnosticConsole: React.FC<DiagnosticConsoleProps> = ({
@@ -19,8 +22,10 @@ export const DiagnosticConsole: React.FC<DiagnosticConsoleProps> = ({
   onToggleOpen,
   failureType = "syntax",
   isSelfHealing = false,
+  activeTheme: passedTheme,
 }) => {
   const [copied, setCopied] = useState<boolean>(false);
+  const activeTheme = passedTheme || getTheme("daylight");
 
   const defaultSyntaxLog =
     "Traceback (most recent call last):\n  File \"/tmp/uv_sandbox/test_agent.py\", line 7, in <module>\n    def calculate_total(items\n                             ^\nSyntaxError: '(' was never closed\n[astral-sh/uv] py_compile caught syntax error in 14ms. Canvas mutation broadcast aborted.";
@@ -54,65 +59,93 @@ export const DiagnosticConsole: React.FC<DiagnosticConsoleProps> = ({
   };
 
   return (
-    <div className="w-full bg-[#FAF8F5] border border-[#E6E2D8] rounded-2xl mb-5 overflow-hidden shadow-apple-sm transition-all duration-300">
+    <div
+      style={{
+        backgroundColor: activeTheme.colors.cardBg,
+        borderColor: activeTheme.colors.border,
+        color: activeTheme.colors.text,
+      }}
+      className="w-full border rounded-2xl mb-4 overflow-hidden shadow-apple-sm transition-colors duration-200"
+    >
       {/* Console Header */}
-      <div className="flex items-center justify-between px-5 py-3 bg-[#F7F4EB] border-b border-[#E6E2D8]">
-        <div className="flex items-center gap-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-[#D97706] animate-pulse" />
-          <h3 className="text-xs font-semibold text-[#1F2328]">
-            Pre-Flight Diagnostic Error &amp; Self-Healing Console
+      <div
+        style={{
+          backgroundColor: activeTheme.colors.headerBg,
+          borderColor: activeTheme.colors.border,
+        }}
+        className="flex items-center justify-between px-4 py-2.5 border-b"
+      >
+        <div className="flex items-center gap-2">
+          <TerminalIcon size={14} className="text-[#D97706]" />
+          <h3 className="text-xs font-semibold" style={{ color: activeTheme.colors.text }}>
+            Diagnostic Error &amp; Self-Healing Console
           </h3>
-          <span className="text-[10px] text-[#656D76] bg-[#FFFFFF] px-2 py-0.5 rounded border border-[#E6E2D8] font-mono">
+          <span
+            style={{
+              backgroundColor: activeTheme.colors.bg,
+              borderColor: activeTheme.colors.border,
+              color: activeTheme.colors.textMuted,
+            }}
+            className="text-[10px] px-2 py-0.2 rounded border font-mono"
+          >
             {isSelfHealing
-              ? "Temporal Self-Healing Loop"
+              ? "Self-Healing Log"
               : failureType === "assertion"
-              ? "astral-sh/uv Pytest Trace"
-              : "astral-sh/uv Compiler Log"}
+              ? "Pytest Trace"
+              : "Compiler Log"}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={handleCopy}
-            className="text-xs px-2.5 py-1 rounded-lg bg-[#FFFFFF] hover:bg-[#EFEAD9] text-[#4B515D] border border-[#D8D2C4] transition cursor-pointer font-medium shadow-apple-sm"
+            style={{
+              backgroundColor: activeTheme.colors.cardBg,
+              borderColor: activeTheme.colors.border,
+              color: activeTheme.colors.text,
+            }}
+            className="text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer font-medium shadow-apple-sm flex items-center gap-1 hover:opacity-90"
           >
-            {copied ? "✓ Copied" : "Copy Traceback"}
+            {copied ? <CheckIcon size={12} className="text-[#137333]" /> : null}
+            <span>{copied ? "Copied" : "Copy Log"}</span>
           </button>
           <button
             type="button"
             onClick={onToggleOpen}
-            className="text-xs px-2.5 py-1 rounded-lg bg-[#FFFFFF] hover:bg-[#EFEAD9] text-[#4B515D] border border-[#D8D2C4] transition cursor-pointer font-medium shadow-apple-sm"
+            style={{
+              backgroundColor: activeTheme.colors.cardBg,
+              borderColor: activeTheme.colors.border,
+              color: activeTheme.colors.text,
+            }}
+            className="text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer font-medium shadow-apple-sm hover:opacity-90"
           >
-            {isOpen ? "Hide Console ▲" : "Show Console ▼"}
+            {isOpen ? "Hide ▲" : "Show ▼"}
           </button>
           {onDismiss && (
             <button
               type="button"
               onClick={onDismiss}
-              className="text-xs px-2 py-1 rounded-lg hover:bg-[#EFEAD9] text-[#8C959F] hover:text-[#1F2328] transition cursor-pointer"
+              style={{ color: activeTheme.colors.textMuted }}
+              className="text-xs w-6 h-6 rounded-lg transition cursor-pointer flex items-center justify-center hover:opacity-80"
               title="Close error banner"
             >
-              ✕
+              <CloseIcon size={12} />
             </button>
           )}
         </div>
       </div>
 
       {isOpen && (
-        <div className="p-4 bg-[#21252B] text-[#ABB2BF] font-mono text-xs overflow-x-auto leading-relaxed">
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#2C313A] text-[11px] text-[#5C6370]">
-            <span>SANDBOX VENV: /tmp/chrono-uv-sandbox (Python 3.12)</span>
-            <span>GATEWAY: Sub-50ms Verification &bull; Temporal Self-Healing Loop</span>
-          </div>
+        <div className="p-3.5 bg-[#21252B] text-[#ABB2BF] font-mono text-xs overflow-x-auto leading-relaxed">
           <pre className={`whitespace-pre-wrap font-mono ${isSelfHealing ? "text-[#98C379]" : "text-[#E06C75]"}`}>
             {displayLog}
           </pre>
-          <div className="mt-3 pt-2.5 border-t border-[#2C313A] flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-[#5C6370]">
+          <div className="mt-2.5 pt-2 border-t border-[#2C313A] flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[10px] text-[#5C6370]">
             <span className="text-[#98C379]">
-              ✓ CRDT Safe-Guard Active: Target document frontier was untouched.
+              ✓ Safe-Guard Active: Target document frontier was untouched.
             </span>
-            <span>{isSelfHealing ? "Self-corrected before canvas merge" : "Mutation blocked prior to Loro canvas broadcast"}</span>
+            <span>{isSelfHealing ? "Self-corrected before canvas merge" : "Mutation blocked prior to broadcast"}</span>
           </div>
         </div>
       )}

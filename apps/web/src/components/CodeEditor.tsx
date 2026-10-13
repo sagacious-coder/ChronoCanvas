@@ -13,11 +13,13 @@ import {
 import { defaultKeymap, history, indentWithTab } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
+import { oneDark } from "@codemirror/theme-one-dark";
 
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
 import { CursorPosition, PeerAwareness, WorkspaceFile } from "../types/shared";
 import { ThemeConfig, getTheme } from "../styles/themes";
+import { UploadIcon, DownloadIcon, FolderIcon, CloseIcon, CheckIcon, FileIcon } from "./Icons";
 
 export interface UserPresence {
   name: string;
@@ -35,7 +37,6 @@ interface CodeEditorProps {
   onCursorChange?: (cursor: CursorPosition, selection?: { anchor: number; head: number }) => void;
   className?: string;
   themeConfig?: ThemeConfig;
-  // Multi-File & Upload capabilities
   activeFile?: WorkspaceFile;
   openFiles?: WorkspaceFile[];
   onSelectFile?: (fileId: string) => void;
@@ -47,18 +48,12 @@ interface CodeEditorProps {
   onDropFiles?: (files: File[]) => void;
 }
 
-/**
- * Universal container reader: reads text from whichever container key
- * the backend or agent worker used (e.g. 'text', 'code', 'content', 'canvas').
- */
 export function extractCanvasText(doc: LoroDoc): string {
-  // 1. Try explicit 'text' container
   try {
     const t = doc.getText("text").toString();
     if (t && t.length > 0) return t;
   } catch {}
 
-  // 2. Try inspecting toJSON() for any populated text container
   try {
     const json = doc.toJSON() as Record<string, unknown>;
     for (const key of Object.keys(json)) {
@@ -69,7 +64,6 @@ export function extractCanvasText(doc: LoroDoc): string {
     }
   } catch {}
 
-  // 3. Fallback candidates common in CRDT backends
   const candidates = ["code", "content", "canvas", "default", "main", "doc", ""];
   for (const key of candidates) {
     try {
@@ -113,7 +107,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     const ext = name.split(".").pop()?.toLowerCase();
     switch (ext) {
       case "py":
-        return "Python (uv sandbox ready)";
+        return "Python (uv sandbox)";
       case "ts":
       case "tsx":
         return "TypeScript";
@@ -125,11 +119,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       case "md":
         return "Markdown";
       default:
-        return "Plain Text / Code";
+        return "Source Code";
     }
   };
 
-  // Broadcast cursor movements via updateListener
   const cursorUpdateListener = EditorView.updateListener.of((update: ViewUpdate) => {
     if (update.selectionSet && onCursorChange) {
       const head = update.state.selection.main.head;
@@ -152,16 +145,21 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     const undoManager = new UndoManager(doc, {});
 
-    // Dynamic theme for CodeMirror 6 adhering to active theme configuration
     const dynamicEditorTheme = EditorView.theme({
       "&": {
         color: activeTheme.colors.text,
         backgroundColor: activeTheme.colors.editorBg,
         fontSize: "13.5px",
       },
+      ".cm-scroller": {
+        backgroundColor: activeTheme.colors.editorBg,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      },
       ".cm-content": {
         caretColor: activeTheme.colors.accent,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        backgroundColor: activeTheme.colors.editorBg,
+        color: activeTheme.colors.text,
       },
       ".cm-cursor, .cm-dropCursor": { borderLeftColor: activeTheme.colors.accent },
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
@@ -184,7 +182,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       drawSelection(),
       dropCursor(),
       bracketMatching(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      ...(activeTheme.isDark ? [oneDark] : [syntaxHighlighting(defaultHighlightStyle, { fallback: true })]),
       javascript({ typescript: true }),
       dynamicEditorTheme,
       keymap.of([...defaultKeymap, indentWithTab]),
@@ -209,6 +207,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       extensions,
     });
 
+    if (containerRef.current) {
+      containerRef.current.innerHTML = "";
+    }
+
     const view = new EditorView({
       state,
       parent: containerRef.current,
@@ -216,7 +218,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
     editorViewRef.current = view;
 
-    // Reactivity Subscription: fires on ANY Loro document mutation (local, import, or agent delta)
     const sub = doc.subscribe(() => {
       if (editorViewRef.current) {
         const activeView = editorViewRef.current;
@@ -266,7 +267,16 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       style={{
         backgroundColor: activeTheme.colors.cardBg,
         borderColor: isDragOver ? "#2563EB" : activeTheme.colors.border,
-      }}
+        "--chrono-editor-bg": activeTheme.colors.editorBg,
+        "--chrono-editor-text": activeTheme.colors.text,
+        "--chrono-editor-gutter": activeTheme.colors.editorGutter,
+        "--chrono-editor-gutter-text": activeTheme.colors.editorGutterText,
+        "--chrono-editor-border": activeTheme.colors.border,
+        "--chrono-editor-active-line": activeTheme.colors.headerBg,
+        "--chrono-editor-gutter-active": activeTheme.colors.borderHover,
+        "--chrono-editor-selection": activeTheme.colors.editorSelection,
+        "--chrono-editor-accent": activeTheme.colors.accent,
+      } as React.CSSProperties}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -274,7 +284,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         isRollbackActive ? "revert-pulse-active" : ""
       } ${isDragOver ? "ring-2 ring-[#2563EB]" : ""} ${className}`}
     >
-      {/* Top Tab Bar (Multi-File Tabs & Quick Action Buttons) */}
+      {/* Sleek Top Tab Bar */}
       <div
         style={{
           backgroundColor: activeTheme.colors.bg,
@@ -296,7 +306,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               className="px-2.5 py-1 rounded-lg border flex items-center gap-1.5 font-medium hover:opacity-80 transition cursor-pointer"
               title="Toggle File Explorer Sidebar"
             >
-              <span>📁</span>
+              <FolderIcon size={13} />
               <span>Files</span>
             </button>
           )}
@@ -317,7 +327,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   isTabActive ? "font-semibold shadow-2xs" : "hover:bg-black/5"
                 }`}
               >
-                <span>{file.name.endsWith(".py") ? "🐍" : file.name.endsWith(".json") ? "⚙️" : "📄"}</span>
+                <FileIcon size={12} />
                 <span>{file.name}</span>
                 {openFiles.length > 1 && onCloseFile && (
                   <button
@@ -326,10 +336,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                       e.stopPropagation();
                       onCloseFile(file.id);
                     }}
-                    className="w-4 h-4 rounded hover:bg-black/10 flex items-center justify-center text-[10px] opacity-60 hover:opacity-100 transition cursor-pointer ml-1"
+                    className="w-4 h-4 rounded hover:bg-black/10 flex items-center justify-center opacity-60 hover:opacity-100 transition cursor-pointer ml-1"
                     title={`Close ${file.name}`}
                   >
-                    ✕
+                    <CloseIcon size={10} />
                   </button>
                 )}
               </div>
@@ -343,10 +353,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <button
               type="button"
               onClick={onUploadClick}
-              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1 bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
+              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1.5 bg-[#2563EB] text-white hover:bg-[#1D4ED8] shadow-apple-sm"
               title="Upload code files from your computer"
             >
-              <span>⬆️</span>
+              <UploadIcon size={12} />
               <span>Upload</span>
             </button>
           )}
@@ -360,10 +370,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 borderColor: activeTheme.colors.border,
                 color: activeTheme.colors.text,
               }}
-              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1 hover:opacity-80"
+              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1.5 hover:opacity-80 shadow-apple-sm"
               title="Download active file"
             >
-              <span>⬇️</span>
+              <DownloadIcon size={12} />
               <span>Export</span>
             </button>
           )}
@@ -376,7 +386,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           backgroundColor: activeTheme.colors.headerBg,
           borderColor: activeTheme.colors.border,
         }}
-        className="flex items-center justify-between px-5 py-2 border-b text-xs"
+        className="flex items-center justify-between px-4 py-2 border-b text-xs"
       >
         <div className="flex items-center gap-2">
           <span style={{ color: activeTheme.colors.text }} className="font-mono font-semibold">
@@ -395,7 +405,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           {isStreaming && (
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F3FF] text-[#7C3AED] border border-[#DDD6FE] animate-pulse">
               <span className="w-1.5 h-1.5 rounded-full bg-[#7C3AED] animate-ping" />
-              AI Agent Streaming Tokens...
+              AI Streaming...
             </span>
           )}
         </div>
@@ -410,7 +420,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           {activePeerList.map((peer) => (
             <span
               key={peer.peerId}
-              className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border"
               style={{
                 borderColor: peer.isAgent ? "#DDD6FE" : (peer.userName === "MU" ? "#CEEAD6" : "#BFDBFE"),
                 backgroundColor: peer.isAgent ? "#F5F3FF" : (peer.userName === "MU" ? "#E6F4EA" : "#EFF6FF"),
@@ -429,21 +439,28 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
       {/* Floating Positive Green Revert Notification Indicator */}
       {isRollbackActive && (
-        <div className="absolute top-14 right-6 z-20 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-lg text-xs font-mono animate-bounce">
-          <span className="w-2 h-2 rounded-full bg-[#34A853]" />
-          <span className="font-semibold">{rollbackMessage || "Document Reverted Successfully (< 4ms)"}</span>
+        <div className="absolute top-14 right-6 z-20 flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-lg text-xs font-mono animate-bounce">
+          <CheckIcon size={14} className="text-[#34A853]" />
+          <span className="font-semibold">{rollbackMessage || "Document Reverted (< 4ms)"}</span>
         </div>
       )}
 
       {/* Drag & Drop Overlay */}
       {isDragOver && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#2563EB]/10 backdrop-blur-2xs border-2 border-dashed border-[#2563EB] m-2 rounded-xl pointer-events-none">
-          <span className="text-3xl">⬆️</span>
-          <span className="text-sm font-semibold text-[#1D4ED8] mt-2">Drop code file to upload and open</span>
+          <UploadIcon size={32} className="text-[#2563EB]" />
+          <span className="text-sm font-semibold text-[#1D4ED8] mt-2">Drop code file to upload</span>
         </div>
       )}
 
-      <div ref={containerRef} className="h-[520px] w-full" />
+      <div
+        ref={containerRef}
+        style={{
+          backgroundColor: activeTheme.colors.editorBg,
+          color: activeTheme.colors.text,
+        }}
+        className="h-[520px] w-full"
+      />
     </div>
   );
 };
