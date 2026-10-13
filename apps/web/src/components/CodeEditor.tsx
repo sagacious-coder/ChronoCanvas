@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { EditorState, Extension } from "@codemirror/state";
 import { 
   EditorView, 
@@ -16,7 +16,7 @@ import { javascript } from "@codemirror/lang-javascript";
 
 import { LoroDoc, Awareness, UndoManager } from "loro-crdt";
 import { LoroExtensions } from "loro-codemirror";
-import { CursorPosition, PeerAwareness } from "../types/shared";
+import { CursorPosition, PeerAwareness, WorkspaceFile } from "../types/shared";
 import { ThemeConfig, getTheme } from "../styles/themes";
 
 export interface UserPresence {
@@ -35,6 +35,16 @@ interface CodeEditorProps {
   onCursorChange?: (cursor: CursorPosition, selection?: { anchor: number; head: number }) => void;
   className?: string;
   themeConfig?: ThemeConfig;
+  // Multi-File & Upload capabilities
+  activeFile?: WorkspaceFile;
+  openFiles?: WorkspaceFile[];
+  onSelectFile?: (fileId: string) => void;
+  onCloseFile?: (fileId: string) => void;
+  onUploadClick?: () => void;
+  onDownloadClick?: () => void;
+  onToggleExplorer?: () => void;
+  isExplorerOpen?: boolean;
+  onDropFiles?: (files: File[]) => void;
 }
 
 /**
@@ -82,10 +92,42 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   onCursorChange,
   className = "",
   themeConfig,
+  activeFile,
+  openFiles = [],
+  onSelectFile,
+  onCloseFile,
+  onUploadClick,
+  onDownloadClick,
+  onToggleExplorer,
+  isExplorerOpen = false,
+  onDropFiles,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const editorViewRef = useRef<EditorView | null>(null);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const activeTheme = themeConfig || getTheme("daylight");
+
+  const fileName = activeFile?.name || "main.ts";
+
+  const getLanguageLabel = (name: string) => {
+    const ext = name.split(".").pop()?.toLowerCase();
+    switch (ext) {
+      case "py":
+        return "Python (uv sandbox ready)";
+      case "ts":
+      case "tsx":
+        return "TypeScript";
+      case "js":
+      case "jsx":
+        return "JavaScript";
+      case "json":
+        return "JSON";
+      case "md":
+        return "Markdown";
+      default:
+        return "Plain Text / Code";
+    }
+  };
 
   // Broadcast cursor movements via updateListener
   const cursorUpdateListener = EditorView.updateListener.of((update: ViewUpdate) => {
@@ -116,8 +158,6 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         color: activeTheme.colors.text,
         backgroundColor: activeTheme.colors.editorBg,
         fontSize: "13.5px",
-        width: "100%",
-        height: "100%",
       },
       ".cm-content": {
         caretColor: activeTheme.colors.accent,
@@ -162,7 +202,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       ),
     ];
 
-    const initialText = extractCanvasText(doc);
+    const initialText = extractCanvasText(doc) || activeFile?.content || "";
 
     const state = EditorState.create({
       doc: initialText,
@@ -204,27 +244,143 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
   const activePeerList = remotePeers ? Array.from(remotePeers.values()) : [];
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onDropFiles) {
+      onDropFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
   return (
     <div
       style={{
         backgroundColor: activeTheme.colors.cardBg,
-        borderColor: activeTheme.colors.border,
+        borderColor: isDragOver ? "#2563EB" : activeTheme.colors.border,
       }}
-      className={`w-full relative border rounded-2xl overflow-hidden shadow-apple-md flex flex-col transition-all duration-300 ${
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`relative border rounded-2xl overflow-hidden shadow-apple-md flex flex-col transition-all duration-300 ${
         isRollbackActive ? "revert-pulse-active" : ""
-      } ${className}`}
+      } ${isDragOver ? "ring-2 ring-[#2563EB]" : ""} ${className}`}
     >
+      {/* Top Tab Bar (Multi-File Tabs & Quick Action Buttons) */}
+      <div
+        style={{
+          backgroundColor: activeTheme.colors.bg,
+          borderColor: activeTheme.colors.border,
+        }}
+        className="flex items-center justify-between border-b px-2 overflow-x-auto text-xs"
+      >
+        <div className="flex items-center gap-1 py-1 overflow-x-auto">
+          {/* Toggle Explorer Button */}
+          {onToggleExplorer && (
+            <button
+              type="button"
+              onClick={onToggleExplorer}
+              style={{
+                backgroundColor: isExplorerOpen ? activeTheme.colors.cardBg : "transparent",
+                borderColor: isExplorerOpen ? activeTheme.colors.border : "transparent",
+                color: activeTheme.colors.text,
+              }}
+              className="px-2.5 py-1 rounded-lg border flex items-center gap-1.5 font-medium hover:opacity-80 transition cursor-pointer"
+              title="Toggle File Explorer Sidebar"
+            >
+              <span>📁</span>
+              <span>Files</span>
+            </button>
+          )}
+
+          {/* Open File Tabs */}
+          {openFiles.map((file) => {
+            const isTabActive = file.id === (activeFile?.id || "f-main");
+            return (
+              <div
+                key={file.id}
+                onClick={() => onSelectFile && onSelectFile(file.id)}
+                style={{
+                  backgroundColor: isTabActive ? activeTheme.colors.cardBg : "transparent",
+                  borderColor: isTabActive ? activeTheme.colors.border : "transparent",
+                  color: isTabActive ? activeTheme.colors.text : activeTheme.colors.textMuted,
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border transition cursor-pointer text-xs ${
+                  isTabActive ? "font-semibold shadow-2xs" : "hover:bg-black/5"
+                }`}
+              >
+                <span>{file.name.endsWith(".py") ? "🐍" : file.name.endsWith(".json") ? "⚙️" : "📄"}</span>
+                <span>{file.name}</span>
+                {openFiles.length > 1 && onCloseFile && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCloseFile(file.id);
+                    }}
+                    className="w-4 h-4 rounded hover:bg-black/10 flex items-center justify-center text-[10px] opacity-60 hover:opacity-100 transition cursor-pointer ml-1"
+                    title={`Close ${file.name}`}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Quick Upload & Download Action Buttons */}
+        <div className="flex items-center gap-1.5 py-1">
+          {onUploadClick && (
+            <button
+              type="button"
+              onClick={onUploadClick}
+              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1 bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
+              title="Upload code files from your computer"
+            >
+              <span>⬆️</span>
+              <span>Upload</span>
+            </button>
+          )}
+
+          {onDownloadClick && (
+            <button
+              type="button"
+              onClick={onDownloadClick}
+              style={{
+                backgroundColor: activeTheme.colors.cardBg,
+                borderColor: activeTheme.colors.border,
+                color: activeTheme.colors.text,
+              }}
+              className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1 hover:opacity-80"
+              title="Download active file"
+            >
+              <span>⬇️</span>
+              <span>Export</span>
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Editor Sub-header with Active Presence & AI Streaming Banner */}
       <div
         style={{
           backgroundColor: activeTheme.colors.headerBg,
           borderColor: activeTheme.colors.border,
         }}
-        className="flex items-center justify-between px-5 py-2.5 border-b text-xs"
+        className="flex items-center justify-between px-5 py-2 border-b text-xs"
       >
         <div className="flex items-center gap-2">
-          <span style={{ color: activeTheme.colors.text }} className="font-mono font-medium">
-            main.ts
+          <span style={{ color: activeTheme.colors.text }} className="font-mono font-semibold">
+            {fileName}
           </span>
           <span
             style={{
@@ -234,7 +390,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             }}
             className="text-[10px] px-2 py-0.5 rounded-md border font-mono"
           >
-            TypeScript / Python
+            {getLanguageLabel(fileName)}
           </span>
           {isStreaming && (
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[#F5F3FF] text-[#7C3AED] border border-[#DDD6FE] animate-pulse">
@@ -271,29 +427,21 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         </div>
       </div>
 
-      {/* Floating Notification Indicator (Green Success / Red Failure) */}
-      {isRollbackActive && (() => {
-        const isFailed = Boolean(
-          rollbackMessage &&
-            (rollbackMessage.toLowerCase().includes("failed") || rollbackMessage.toLowerCase().includes("error"))
-        );
-        return (
-          <div
-            className={`absolute top-14 right-6 z-20 flex items-center gap-2 px-4 py-2 rounded-xl shadow-apple-lg text-xs font-mono animate-bounce border ${
-              isFailed
-                ? "bg-[#FEF2F2] text-[#DC2626] border-[#FECACA]"
-                : "bg-[#E6F4EA] text-[#137333] border-[#CEEAD6]"
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isFailed ? "bg-[#EF4444]" : "bg-[#34A853]"
-              }`}
-            />
-            <span className="font-semibold">{rollbackMessage || "Document Reverted Successfully (< 4ms)"}</span>
-          </div>
-        );
-      })()}
+      {/* Floating Positive Green Revert Notification Indicator */}
+      {isRollbackActive && (
+        <div className="absolute top-14 right-6 z-20 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-lg text-xs font-mono animate-bounce">
+          <span className="w-2 h-2 rounded-full bg-[#34A853]" />
+          <span className="font-semibold">{rollbackMessage || "Document Reverted Successfully (< 4ms)"}</span>
+        </div>
+      )}
+
+      {/* Drag & Drop Overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#2563EB]/10 backdrop-blur-2xs border-2 border-dashed border-[#2563EB] m-2 rounded-xl pointer-events-none">
+          <span className="text-3xl">⬆️</span>
+          <span className="text-sm font-semibold text-[#1D4ED8] mt-2">Drop code file to upload and open</span>
+        </div>
+      )}
 
       <div ref={containerRef} className="h-[520px] w-full" />
     </div>

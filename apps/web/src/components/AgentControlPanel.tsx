@@ -25,8 +25,6 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
 }) => {
   const [prompt, setPrompt] = useState("");
 
-  console.log("Frontend received status:", currentStatus);
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim()) return;
@@ -36,10 +34,6 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
 
   const handleSimulateRollback = () => {
     onTriggerTask("Test autonomous error handling and instant rollback", true, "syntax", false);
-  };
-
-  const handleSimulateSelfHealing = () => {
-    onTriggerTask("Write a python script that prints Hello World but has an intentional IndentationError.", false);
   };
 
   const getStatusBadge = () => {
@@ -60,25 +54,11 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
             Temporal: Planning Task...
           </span>
         );
-      case "reading-canvas":
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
-            <span className="w-2 h-2 rounded-full bg-[#2563EB] animate-pulse" />
-            Reading Canvas...
-          </span>
-        );
       case "generating":
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#F5F3FF] text-[#6D28D9] border border-[#DDD6FE]">
             <span className="w-2 h-2 rounded-full bg-[#7C3AED] animate-spin" />
             Generating in Scratchpad ({currentStatus.tokenCount || 0} tokens)...
-          </span>
-        );
-      case "injecting":
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]">
-            <span className="w-2 h-2 rounded-full bg-[#D97706] animate-bounce" />
-            Injecting Code...
           </span>
         );
       case "sandboxed-testing":
@@ -92,13 +72,10 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
         return (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#F5F3FF] text-[#6D28D9] border border-[#DDD6FE] animate-pulse">
             <span className="w-2 h-2 rounded-full bg-[#7C3AED] animate-spin" />
-            {currentStatus.failureType === "syntax"
-              ? "Syntax Error Caught: Healing..."
-              : "Temporal Self-Healing: Re-injecting Traceback..."}
+            Temporal Self-Healing: Re-injecting Traceback...
           </span>
         );
       case "committed":
-      case "completed":
         return (
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6]">
@@ -132,25 +109,6 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
                 onClick={onClearStatus}
                 title="Dismiss feedback"
                 className="text-xs text-[#137333] hover:text-[#0D5224] transition cursor-pointer font-bold"
-              >
-                ✕ Dismiss
-              </button>
-            )}
-          </div>
-        );
-      case "failed":
-        return (
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-[#FEF2F2] text-[#DC2626] border border-[#FECACA]">
-              <span className="w-2 h-2 rounded-full bg-[#EF4444]" />
-              Task Failed (Retries Exhausted)
-            </span>
-            {onClearStatus && (
-              <button
-                type="button"
-                onClick={onClearStatus}
-                title="Dismiss feedback"
-                className="text-xs text-[#DC2626] hover:text-[#991B1B] transition cursor-pointer font-bold"
               >
                 ✕ Dismiss
               </button>
@@ -204,14 +162,7 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
               ? `Instruct autonomous agent via ${byokConfig.model}...`
               : "Instruct the autonomous agent (e.g., 'Implement binary search with type hints')..."
           }
-          disabled={Boolean(
-            isConnecting ||
-              (currentStatus &&
-                currentStatus.status !== "committed" &&
-                currentStatus.status !== "completed" &&
-                currentStatus.status !== "rolled-back" &&
-                currentStatus.status !== "failed")
-          )}
+          disabled={Boolean(isConnecting || (currentStatus && currentStatus.status !== "committed" && currentStatus.status !== "rolled-back"))}
           className="flex-1 w-full bg-[#FFFFFF] border border-[#E6E2D8] rounded-xl px-4 py-2 text-xs text-[#1F2328] placeholder-[#8C959F] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] disabled:opacity-50 transition shadow-apple-sm"
         />
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -221,15 +172,6 @@ export const AgentControlPanel: React.FC<AgentControlPanelProps> = ({
             className="flex-1 sm:flex-initial px-4 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#F7F4EB] disabled:text-[#8C959F] text-white font-medium text-xs transition shadow-apple-sm cursor-pointer disabled:cursor-not-allowed"
           >
             Dispatch Agent
-          </button>
-          <button
-            type="button"
-            onClick={handleSimulateSelfHealing}
-            disabled={isConnecting}
-            title="Demonstrates catching a syntax error in uv and retrying"
-            className="px-3.5 py-2 rounded-xl bg-[#F7F4EB] hover:bg-[#EFEAD9] text-[#4B515D] border border-[#E6E2D8] font-medium text-xs transition cursor-pointer shadow-apple-sm"
-          >
-            Test Self-Healing
           </button>
           <button
             type="button"

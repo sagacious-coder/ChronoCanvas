@@ -6,7 +6,6 @@ export interface DocumentCheckpoint {
   frontier: string;
   label: string;
   origin: "human" | "agent" | "initial";
-  peer?: string;
   description?: string;
   isCurrent?: boolean;
 }
@@ -31,7 +30,6 @@ export const CheckpointTimeline: React.FC<CheckpointTimelineProps> = ({
     frontier: "root-0",
     label: "Initial Document State",
     origin: "initial",
-    peer: "root-0",
   };
 
   const editCheckpoints = checkpoints.filter((c) => c.origin !== "initial");
@@ -123,7 +121,6 @@ export const CheckpointTimeline: React.FC<CheckpointTimelineProps> = ({
           <div className="space-y-2">
             {visibleEdits.map((cp, idx) => {
               const isHead = cp.frontier === currentFrontier;
-              const isAgent = cp.peer === "999999999" || cp.origin === "agent";
 
               return (
                 <div
@@ -141,24 +138,9 @@ export const CheckpointTimeline: React.FC<CheckpointTimelineProps> = ({
                     <div className="flex flex-col">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-[#1F2328]">{cp.label}</span>
-                        {isAgent ? (
-                          <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE] font-semibold flex items-center gap-1.5 shadow-apple-sm">
-                            <svg
-                              className="w-3.5 h-3.5 text-[#2563EB]"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <rect x="3" y="11" width="18" height="10" rx="2" />
-                              <circle cx="12" cy="5" r="2" />
-                              <path d="M12 7v4" />
-                              <line x1="8" y1="16" x2="8" y2="16" />
-                              <line x1="16" y1="16" x2="16" y2="16" />
-                            </svg>
-                            Agent Edit
+                        {cp.origin === "agent" ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#F3E8FF] text-[#7C3AED] border border-[#E9D5FF] font-medium">
+                            Agent Stream
                           </span>
                         ) : (
                           <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#EFF6FF] text-[#2563EB] border border-[#DBEAFE] font-medium">
@@ -178,20 +160,6 @@ export const CheckpointTimeline: React.FC<CheckpointTimelineProps> = ({
                         <span className="font-mono truncate max-w-[220px]" title={cp.frontier}>
                           Frontier: {cp.frontier}
                         </span>
-                        {cp.peer && (
-                          <>
-                            <span>&bull;</span>
-                            <span
-                              className={`font-mono text-[10px] px-1.5 py-0.5 rounded border ${
-                                cp.peer === "999999999"
-                                  ? "bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE] font-semibold"
-                                  : "bg-[#F4EFE6] text-[#656D76] border-[#E6E2D8]"
-                              }`}
-                            >
-                              Peer: {cp.peer}
-                            </span>
-                          </>
-                        )}
                       </div>
                     </div>
                   </div>

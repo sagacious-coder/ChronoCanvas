@@ -1,14 +1,15 @@
 import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { LoroDoc, Awareness } from "loro-crdt";
-import { CodeEditor, UserPresence } from "./components/CodeEditor";
+import { CodeEditor, UserPresence, extractCanvasText } from "./components/CodeEditor";
 import { AgentControlPanel } from "./components/AgentControlPanel";
 import { CheckpointTimeline, DocumentCheckpoint } from "./components/CheckpointTimeline";
 import { SandboxDiagnosticWidget } from "./components/SandboxDiagnosticWidget";
 import { DiagnosticConsole } from "./components/DiagnosticConsole";
 import { UserSettingsModal, WorkspacePanelSettings } from "./components/UserSettingsModal";
 import { SystemSanityModal } from "./components/SystemSanityModal";
+import { FileExplorer } from "./components/FileExplorer";
 import { useLoroSync } from "./hooks/useLoroSync";
-import { CursorPosition, ByokConfig, UserAuthSession } from "./types/shared";
+import { CursorPosition, ByokConfig, UserAuthSession, WorkspaceFile } from "./types/shared";
 import { getTheme, DEFAULT_THEME_ID } from "./styles/themes";
 
 export const App: React.FC = () => {
@@ -33,7 +34,7 @@ export const App: React.FC = () => {
     return `${currentUser.name}-${Math.random().toString(36).substring(2, 7)}`;
   }, [currentUser.name]);
 
-  // Dynamic Theme Engine (Daylight is original creamy default; 11 developer themes available)
+  // Dynamic Theme Engine (Daylight is original default; 11 developer themes available)
   const [currentThemeId, setCurrentThemeId] = useState<string>(() => {
     try {
       return localStorage.getItem("chrono_theme") || DEFAULT_THEME_ID;
@@ -51,9 +52,144 @@ export const App: React.FC = () => {
     } catch {}
   };
 
-  const handleToggleTheme = () => {
-    const nextTheme = activeTheme.isDark ? "daylight" : "night";
-    handleSelectTheme(nextTheme);
+  // Multi-File Workspace System (File Uploading, Drag-Drop, Multi-File Tabs)
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>(() => {
+    try {
+      const saved = localStorage.getItem("chrono_workspace_files");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: "f-main",
+        name: "main.ts",
+        language: "typescript",
+        content: "// ChronoCanvas Real-Time Co-Editing\nfunction main() {\n  console.log('Hello ChronoCanvas');\n}\n",
+      },
+      {
+        id: "f-algo",
+        name: "binary_search.py",
+        language: "python",
+        content: "def binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1\n",
+      },
+    ];
+  });
+
+  const [activeFileId, setActiveFileId] = useState<string>("f-main");
+  const [openFileIds, setOpenFileIds] = useState<string[]>(["f-main", "f-algo"]);
+  const [isExplorerOpen, setIsExplorerOpen] = useState<boolean>(true);
+  const globalFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Sync workspaceFiles to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem("chrono_workspace_files", JSON.stringify(workspaceFiles));
+    } catch {}
+  }, [workspaceFiles]);
+
+  const activeFile = workspaceFiles.find((f) => f.id === activeFileId) || workspaceFiles[0];
+  const openFiles = workspaceFiles.filter((f) => openFileIds.includes(f.id));
+
+  // Switch between files: updates CRDT canvas text and active state
+  const handleSelectFile = useCallback((fileId: string) => {
+    // 1. Save current editor content to current file
+    const currentText = extractCanvasText(doc);
+    setWorkspaceFiles((prev) =>
+      prev.map((f) => (f.id === activeFileId ? { ...f, content: currentText } : f))
+    );
+
+    // 2. Find target file
+    const target = workspaceFiles.find((f) => f.id === fileId);
+    if (!target) return;
+
+    setActiveFileId(fileId);
+    if (!openFileIds.includes(fileId)) {
+      setOpenFileIds((prev) => [...prev, fileId]);
+    }
+
+    // 3. Load target file text into Loro CRDT document
+    try {
+      const textContainer = doc.getText("text");
+      const currentDocText = textContainer.toString();
+      if (currentDocText !== target.content) {
+        textContainer.delete(0, currentDocText.length);
+        textContainer.insert(0, target.content);
+        doc.commit();
+      }
+    } catch (e) {
+      console.error("Error switching file in Loro:", e);
+    }
+  }, [doc, activeFileId, workspaceFiles, openFileIds]);
+
+  const handleCloseFile = (fileId: string) => {
+    setOpenFileIds((prev) => {
+      const filtered = prev.filter((id) => id !== fileId);
+      if (activeFileId === fileId && filtered.length > 0) {
+        handleSelectFile(filtered[0]);
+      }
+      return filtered.length > 0 ? filtered : [fileId];
+    });
+  };
+
+  const handleCreateFile = (name: string, content = "") => {
+    const id = `f-${Date.now()}`;
+    const ext = name.split(".").pop()?.toLowerCase() || "txt";
+    const language = ext === "py" ? "python" : ext === "ts" ? "typescript" : ext === "json" ? "json" : "javascript";
+    const newFile: WorkspaceFile = {
+      id,
+      name,
+      language,
+      content,
+      lastModified: Date.now(),
+      size: content.length,
+    };
+
+    setWorkspaceFiles((prev) => [...prev, newFile]);
+    setOpenFileIds((prev) => [...prev, id]);
+    setActiveFileId(id);
+
+    try {
+      const textContainer = doc.getText("text");
+      const currentDocText = textContainer.toString();
+      textContainer.delete(0, currentDocText.length);
+      textContainer.insert(0, content);
+      doc.commit();
+    } catch {}
+  };
+
+  const handleDeleteFile = (fileId: string) => {
+    if (workspaceFiles.length <= 1) return;
+    setWorkspaceFiles((prev) => prev.filter((f) => f.id !== fileId));
+    setOpenFileIds((prev) => prev.filter((id) => id !== fileId));
+    if (activeFileId === fileId) {
+      const remaining = workspaceFiles.filter((f) => f.id !== fileId);
+      if (remaining.length > 0) {
+        handleSelectFile(remaining[0].id);
+      }
+    }
+  };
+
+  const handleUploadFiles = (uploadedFiles: File[]) => {
+    uploadedFiles.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const textContent = (e.target?.result as string) || "";
+        handleCreateFile(file.name, textContent);
+      };
+      reader.readAsText(file);
+    });
+  };
+
+  const handleDownloadFile = (file: WorkspaceFile) => {
+    const content = file.id === activeFileId ? extractCanvasText(doc) : file.content;
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Modular Panel & Layout Settings (Decluttering landing page)
@@ -127,20 +263,9 @@ export const App: React.FC = () => {
     } catch {}
   };
 
-  // Resolve active tokens and API keys
-  const activeToken =
-    authSession.mode === "jwt" && authSession.token?.trim()
-      ? authSession.token.trim()
-      : "dev-dummy-token";
-  const activeApiKey = byokConfig.enabled && byokConfig.apiKey?.trim() ? byokConfig.apiKey.trim() : undefined;
-  const activeProvider =
-    byokConfig.enabled && byokConfig.provider !== "custom" ? byokConfig.provider : undefined;
-
   // Synchronize WebSocket client with Loro CRDT, Awareness & Temporal Agent signals
   const {
     status,
-    isAuthenticated,
-    authError,
     stats,
     agentStatus,
     remotePeers,
@@ -149,35 +274,7 @@ export const App: React.FC = () => {
     broadcastAwareness,
     getFrontierString,
     reconnect,
-    updateCredentials,
-  } = useLoroSync(
-    doc,
-    "ws://localhost:3001",
-    "chrono-canvas-default",
-    peerId,
-    activeToken,
-    activeApiKey,
-    activeProvider,
-  );
-
-  // Guard against WebSocket authentication infinite spam loop:
-  // Tracks credentials already transmitted on the current socket session.
-  const registeredKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (status === "disconnected" || status === "error") {
-      registeredKeyRef.current = null;
-      return;
-    }
-
-    if (status === "connected") {
-      const currentCredKey = `${activeToken}:${activeApiKey || ""}:${activeProvider || ""}`;
-      if (registeredKeyRef.current !== currentCredKey) {
-        registeredKeyRef.current = currentCredKey;
-        updateCredentials(activeToken, activeApiKey, activeProvider);
-      }
-    }
-  }, [status, activeToken, activeApiKey, activeProvider, updateCredentials]);
+  } = useLoroSync(doc, "ws://localhost:3001", "chrono-canvas-default", peerId);
 
   const [currentFrontier, setCurrentFrontier] = useState<string>("root-0");
   const [checkpoints, setCheckpoints] = useState<DocumentCheckpoint[]>([
@@ -187,7 +284,6 @@ export const App: React.FC = () => {
       frontier: "root-0",
       label: "Initial Document State",
       origin: "initial",
-      peer: "root-0",
     },
   ]);
 
@@ -203,91 +299,43 @@ export const App: React.FC = () => {
     if (fStr && fStr !== "root-0") {
       setCheckpoints((prev) => {
         if (prev.some((c) => c.frontier === fStr)) return prev;
-
-        // Parse frontier string to detect author peer ID
-        let detectedPeer: string | undefined;
-        try {
-          if (fStr !== "Latest") {
-            const parsed = JSON.parse(fStr);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              const agentEntry = parsed.find((entry: any) => String(entry.peer) === "999999999");
-              if (agentEntry) {
-                detectedPeer = "999999999";
-              } else if (parsed[0]?.peer !== undefined) {
-                detectedPeer = String(parsed[0].peer);
-              }
-            }
-          }
-        } catch {
-          // ignore parsing error
-        }
-
         const isHealed = Boolean(agentStatus?.healedSuccessfully);
-        const isAgent = detectedPeer === "999999999" || agentStatus?.status === "generating" || isHealed;
         const newCp: DocumentCheckpoint = {
           id: `cp-${Date.now()}`,
           timestamp: Date.now(),
           frontier: fStr,
           label: isHealed
             ? "Self-Healed Agent Delta (Milestone 3)"
-            : isAgent
+            : agentStatus?.status === "generating"
             ? "Agent Generation Delta"
             : "Human Edit Checkpoint",
-          origin: isAgent ? "agent" : "human",
-          peer: detectedPeer || (isAgent ? "999999999" : doc.peerIdStr),
+          origin: agentStatus?.status === "generating" || isHealed ? "agent" : "human",
         };
         return [newCp, ...prev];
       });
     }
-  }, [getFrontierString, stats.updatesSent, stats.updatesReceived, agentStatus?.status, agentStatus?.healedSuccessfully, doc.peerIdStr]);
+  }, [getFrontierString, stats.updatesSent, stats.updatesReceived, agentStatus?.status, agentStatus?.healedSuccessfully]);
 
-  // Terminal Agent State Resolution & Revert Feedback
+  // Stage 4: Positive Green Revert & Pre-Flight Diagnostic Drawer Auto-Open
   useEffect(() => {
-    if (!agentStatus) return;
-
-    if (agentStatus.status === "completed" || agentStatus.status === "committed") {
-      setIsRollbackActive(true);
-      setRollbackMessage("Agent Task Completed: Document Successfully Verified & Updated");
-    } else if (agentStatus.status === "failed") {
-      setIsRollbackActive(true);
-      setRollbackMessage(
-        agentStatus.errorTrace
-          ? `Agent Task Failed: ${agentStatus.errorTrace}`
-          : "Agent Task Failed: Maximum retries exhausted"
-      );
-    } else if (agentStatus.status === "rolled-back" && !agentStatus.healedSuccessfully) {
+    if (agentStatus?.status === "rolled-back" && !agentStatus?.healedSuccessfully) {
       setIsRollbackActive(true);
       setIsConsoleOpen(true);
       setRollbackMessage("Pre-Flight Gatekeeper Blocked Mutation: Canvas Preserved in < 4ms (human edits protected)");
-    } else if (agentStatus.healedSuccessfully) {
+      const timer = setTimeout(() => {
+        setIsRollbackActive(false);
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+    if (agentStatus?.healedSuccessfully) {
       setIsRollbackActive(true);
       setRollbackMessage("Milestone 3 Verified: Autonomous Self-Healing Succeeded (< 40ms, Canvas Merged)");
-    } else if (
-      agentStatus.status === "planning" ||
-      agentStatus.status === "generating" ||
-      agentStatus.status === "sandboxed-testing" ||
-      agentStatus.status === "self-healing"
-    ) {
-      // Clear previous notifications immediately when a new task begins
-      setIsRollbackActive(false);
-      setRollbackMessage(null);
+      const timer = setTimeout(() => {
+        setIsRollbackActive(false);
+      }, 4000);
+      return () => clearTimeout(timer);
     }
-  }, [agentStatus?.status, agentStatus?.errorTrace, agentStatus?.healedSuccessfully]);
-
-  // Auto-hide notification overlay in main editor after 8 seconds (8000ms)
-  useEffect(() => {
-    if (!isRollbackActive) return;
-
-    const timer = setTimeout(() => {
-      setIsRollbackActive(false);
-      setRollbackMessage(null);
-      clearAgentStatus();
-    }, 8000);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [isRollbackActive, rollbackMessage, clearAgentStatus]);
+  }, [agentStatus?.status, agentStatus?.healedSuccessfully]);
 
   // Interactive Time-Travel / Checkpoint Reversion via doc.checkout()
   const handleRestoreCheckpoint = useCallback(
@@ -326,39 +374,27 @@ export const App: React.FC = () => {
   };
 
   const toggleUserIdentity = () => {
-    const nextUser: UserPresence =
-      currentUser.name === "ZA"
-        ? { name: "MU", colorClassName: "loro-user-mu" }
-        : { name: "ZA", colorClassName: "loro-user-za" };
-    setCurrentUser(nextUser);
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("user", nextUser.name);
-    window.history.replaceState({}, "", newUrl.toString());
+    if (currentUser.name === "ZA") {
+      setCurrentUser({ name: "MU", colorClassName: "loro-user-mu" });
+    } else {
+      setCurrentUser({ name: "ZA", colorClassName: "loro-user-za" });
+    }
   };
 
   const getStatusBadge = () => {
-    if (authError) {
-      return (
-        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#FEE2E2] text-[#B91C1C] border border-[#FECACA] shadow-apple-sm">
-          <span className="w-2 h-2 rounded-full bg-[#EF4444]" />
-          Auth Failed: {authError}
-        </span>
-      );
-    }
-
     switch (status) {
       case "connected":
         return (
           <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#E6F4EA] text-[#137333] border border-[#CEEAD6] shadow-apple-sm">
             <span className="w-2 h-2 rounded-full bg-[#34A853] animate-pulse" />
-            {isAuthenticated ? "Live & Authenticated" : "Live WebSocket Connected"}
+            Live WebSocket Connected
           </span>
         );
       case "connecting":
         return (
           <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A] shadow-apple-sm">
-            <span className="w-2 h-2 rounded-full bg-[#F59E0B] animate-ping" />
-            Connecting to Gateway...
+            <span className="w-2 h-2 rounded-full bg-[#D97706] animate-ping" />
+            Connecting to Relay...
           </span>
         );
       case "disconnected":
@@ -414,32 +450,16 @@ export const App: React.FC = () => {
               }}
               className="text-[11px] border px-2.5 py-0.5 rounded-full font-medium"
             >
-              Stage 4 &bull; Day 14 Launch Ready
+              Stage 4 &bull; Multi-File IDE
             </span>
           </div>
           <p className="text-xs mt-1 font-normal" style={{ color: activeTheme.colors.textMuted }}>
-            Zero-Lock Collaborative Coding &bull; Full E2E Sanity Verified &bull; {activeTheme.name}
+            Zero-Lock Collaborative Coding &bull; Multi-File Explorer &amp; Upload &bull; {activeTheme.name}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
           {getStatusBadge()}
-
-          {/* Theme Button (Dark/Light Mode Toggle) */}
-          <button
-            type="button"
-            onClick={handleToggleTheme}
-            style={{
-              backgroundColor: activeTheme.colors.cardBg,
-              borderColor: activeTheme.colors.border,
-              color: activeTheme.colors.text,
-            }}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border transition cursor-pointer shadow-apple-sm hover:opacity-90 font-medium"
-            title={`Toggle Theme: Switch to ${activeTheme.isDark ? "Creamy Daylight" : "Night Dark"}`}
-          >
-            <span>{activeTheme.isDark ? "☀️" : "🌙"}</span>
-            <span>{activeTheme.isDark ? "Daylight Mode" : "Dark Mode"}</span>
-          </button>
 
           {/* Day 14 E2E Sanity Suite Button */}
           <button
@@ -527,22 +547,35 @@ export const App: React.FC = () => {
           ))}
         </div>
 
-        {/* Quick-action Chips for theme & status */}
+        {/* Quick File Explorer & Upload Actions */}
         <div className="flex items-center gap-2 text-[11px] font-mono" style={{ color: activeTheme.colors.textMuted }}>
+          {/* Direct Upload Button */}
           <button
             type="button"
-            onClick={handleToggleTheme}
-            style={{
-              backgroundColor: activeTheme.colors.cardBg,
-              borderColor: activeTheme.colors.border,
-            }}
-            className="px-2.5 py-1 rounded-lg border flex items-center gap-1.5 cursor-pointer hover:opacity-85 transition"
-            title={`Click to toggle: ${activeTheme.isDark ? "Creamy Daylight" : "Night Dark"}`}
+            onClick={() => globalFileInputRef.current?.click()}
+            className="px-2.5 py-1 rounded-lg border text-[11px] font-medium transition cursor-pointer flex items-center gap-1 bg-[#2563EB] text-white hover:bg-[#1D4ED8] shadow-apple-sm font-sans"
+            title="Upload code files (.ts, .py, .json) from your computer"
           >
-            <span>{activeTheme.isDark ? "☀️" : "🎨"}</span>
-            <span>Theme:</span>
-            <strong style={{ color: activeTheme.colors.text }}>{activeTheme.name}</strong>
+            <span>⬆️</span>
+            <span>Upload File</span>
           </button>
+
+          {/* Toggle Explorer Button */}
+          <button
+            type="button"
+            onClick={() => setIsExplorerOpen(!isExplorerOpen)}
+            style={{
+              backgroundColor: isExplorerOpen ? activeTheme.colors.cardBg : "transparent",
+              borderColor: activeTheme.colors.border,
+              color: activeTheme.colors.text,
+            }}
+            className="px-2.5 py-1 rounded-lg border flex items-center gap-1.5 transition cursor-pointer"
+            title="Toggle File Explorer Sidebar"
+          >
+            <span>📁</span>
+            <span>Files ({workspaceFiles.length})</span>
+          </button>
+
           <span
             style={{
               backgroundColor: activeTheme.colors.cardBg,
@@ -550,21 +583,32 @@ export const App: React.FC = () => {
             }}
             className="px-2.5 py-1 rounded-lg border hidden md:flex items-center gap-1.5"
           >
-            <span>Auth:</span>
-            <strong style={{ color: activeTheme.colors.text }}>
-              {authSession.mode === "jwt" && authSession.token ? "JWT Bearer" : "Guest Mode"}
-            </strong>
+            <span>Theme:</span>
+            <strong style={{ color: activeTheme.colors.text }}>{activeTheme.name}</strong>
           </span>
         </div>
       </div>
 
-      <main className="w-full max-w-5xl flex flex-col items-center">
+      {/* Hidden Global File Input */}
+      <input
+        ref={globalFileInputRef}
+        type="file"
+        multiple
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            handleUploadFiles(Array.from(e.target.files));
+            e.target.value = "";
+          }
+        }}
+        className="hidden"
+        accept=".ts,.tsx,.js,.jsx,.py,.json,.md,.txt,.html,.css"
+      />
+
+      <main className="w-full max-w-5xl">
         {/* Panel 1: Temporal Agent Workflow Controller */}
         {isAgentVisible && (
           <AgentControlPanel
-            onTriggerTask={(prompt, fail, failureType, enableSelfHealing) => {
-              setIsRollbackActive(false);
-              setRollbackMessage(null);
+            onTriggerTask={(prompt, fail, failureType, enableSelfHealing) =>
               dispatchAgentTask(
                 prompt,
                 fail,
@@ -572,8 +616,8 @@ export const App: React.FC = () => {
                 Boolean(enableSelfHealing),
                 byokConfig,
                 authSession.mode === "jwt" ? authSession.token : undefined
-              );
-            }}
+              )
+            }
             onClearStatus={clearAgentStatus}
             currentStatus={agentStatus}
             currentFrontier={currentFrontier}
@@ -589,9 +633,7 @@ export const App: React.FC = () => {
             sandboxResult={agentStatus?.sandboxResult}
             selfHealingAttempt={agentStatus?.selfHealingAttempt}
             healedSuccessfully={agentStatus?.healedSuccessfully}
-            onSimulateTest={(fail, failureType, enableSelfHealing) => {
-              setIsRollbackActive(false);
-              setRollbackMessage(null);
+            onSimulateTest={(fail, failureType, enableSelfHealing) =>
               dispatchAgentTask(
                 enableSelfHealing
                   ? "Autonomous self-healing verification task"
@@ -601,8 +643,8 @@ export const App: React.FC = () => {
                 Boolean(enableSelfHealing),
                 byokConfig,
                 authSession.mode === "jwt" ? authSession.token : undefined
-              );
-            }}
+              )
+            }
             isConnecting={status !== "connected"}
           />
         )}
@@ -678,7 +720,11 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1.5 text-[#137333]">
                 <span className="w-2 h-2 rounded-full bg-[#137333]" />
-                Container: <strong>Nginx Alpine (Port 80/8080)</strong>
+                Active File: <strong>{activeFile.name}</strong>
+              </span>
+              <span>&bull;</span>
+              <span>
+                Total Files: <strong>{workspaceFiles.length}</strong>
               </span>
               <span>&bull;</span>
               <span>
@@ -686,24 +732,51 @@ export const App: React.FC = () => {
               </span>
             </div>
             <div className="text-[11px] opacity-75">
-              Routing: <strong>try_files $uri /index.html</strong>
+              Multi-File VFS Active &bull; Drag &amp; Drop Supported
             </div>
           </div>
         )}
 
-        {/* Code Editor with Universal Container Rendering and Theme Synchronization */}
-        <CodeEditor
-          className="w-full"
-          doc={doc}
-          awareness={awareness}
-          currentUser={currentUser}
-          remotePeers={remotePeers}
-          isStreaming={agentStatus?.status === "generating" || agentStatus?.status === "self-healing"}
-          isRollbackActive={isRollbackActive}
-          rollbackMessage={rollbackMessage}
-          onCursorChange={handleCursorChange}
-          themeConfig={activeTheme}
-        />
+        {/* Multi-File Workspace Layout (FileExplorer + CodeEditor with Tabs) */}
+        <div className="flex flex-col md:flex-row gap-4 items-start w-full">
+          {/* File Explorer Sidebar */}
+          <FileExplorer
+            files={workspaceFiles}
+            activeFileId={activeFileId}
+            onSelectFile={handleSelectFile}
+            onCreateFile={handleCreateFile}
+            onDeleteFile={handleDeleteFile}
+            onUploadFiles={handleUploadFiles}
+            onDownloadFile={handleDownloadFile}
+            activeTheme={activeTheme}
+            isOpen={isExplorerOpen}
+            onToggleOpen={() => setIsExplorerOpen(!isExplorerOpen)}
+          />
+
+          {/* Code Editor with Tabs and Drag & Drop */}
+          <div className="flex-1 w-full min-w-0">
+            <CodeEditor
+              doc={doc}
+              awareness={awareness}
+              currentUser={currentUser}
+              remotePeers={remotePeers}
+              isStreaming={agentStatus?.status === "generating" || agentStatus?.status === "self-healing"}
+              isRollbackActive={isRollbackActive}
+              rollbackMessage={rollbackMessage}
+              onCursorChange={handleCursorChange}
+              themeConfig={activeTheme}
+              activeFile={activeFile}
+              openFiles={openFiles}
+              onSelectFile={handleSelectFile}
+              onCloseFile={handleCloseFile}
+              onUploadClick={() => globalFileInputRef.current?.click()}
+              onDownloadClick={() => handleDownloadFile(activeFile)}
+              onToggleExplorer={() => setIsExplorerOpen(!isExplorerOpen)}
+              isExplorerOpen={isExplorerOpen}
+              onDropFiles={handleUploadFiles}
+            />
+          </div>
+        </div>
       </main>
 
       {/* User Settings & BYOK / JWT / Theme Modal */}
